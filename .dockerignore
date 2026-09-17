@@ -1,0 +1,37 @@
+# Contexto de build mínimo: acelera o build e reduz o tamanho da imagem.
+.gitignore
+.git/
+.opencode/
+.env
+.env.*
+*.env
+
+# Especificações/planejamento não entram no container.
+specs/
+README.md
+PROMPTS.md
+
+# Artefatos Python.
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.whl
+.venv/
+venv/
+env/
+
+# Testes / ferramentas locais.
+.pytest_cache/
+.coverage
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.tox/
+
+# IDE / OS.
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+*.log
