@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+eggs/
+*.whl
+
+# Ambientes virtuais
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.*
+*.env
+
+# Testes / cobertura
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+
+# Django / DRF / FastAPI
+db.sqlite3
+*.sqlite3
+*.db
+staticfiles/
+media/
+settings_local.py
+local_settings.py
+
+# Docker
+*.log
+
+# IDE / editores
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Ferramentas locais deste projeto
+.opencode/node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/secrets.toml
