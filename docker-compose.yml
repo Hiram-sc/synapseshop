@@ -14,6 +14,14 @@ services:
       POSTGRES_PASSWORD: synapseshop
     restart: unless-stopped
 
+  inventory:
+    build: ./inventory
+    image: synapseshop-inventory:dev
+    container_name: synapseshop-inventory
+    ports:
+      - "8001:8000"
+    restart: unless-stopped
+
   postgres:
     image: postgres:16
     container_name: synapseshop-db

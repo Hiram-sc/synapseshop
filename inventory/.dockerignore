@@ -1,0 +1,14 @@
+# build minimo do microsserviço de inventario
+.git/
+.gitignore
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+*.log
