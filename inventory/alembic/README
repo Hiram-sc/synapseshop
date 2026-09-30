@@ -1,0 +1,27 @@
+Configuração do Alembic do microsserviço de inventário.
+
+Os comandos são executados de dentro da rede do Docker Compose, porque o
+hostname `postgres` só é resolvido dentro dela. A URL de conexão vem das
+variáveis `POSTGRES_*` definidas no `docker-compose.yml` e é montada em
+`alembic/env.py`; o `alembic.ini` não guarda nenhuma credencial.
+
+    # aplica todas as migrations
+    docker compose run --rm inventory alembic upgrade head
+
+    # desfaz a última migration aplicada
+    docker compose run --rm inventory alembic downgrade -1
+
+    # consulta o estado do versionamento
+    docker compose run --rm inventory alembic current
+
+    # gera uma migration a partir dos modelos (o arquivo nasce no container,
+    # então o bind mount devolve o resultado para o host)
+    docker compose run --rm -v "${PWD}/inventory/alembic:/app/alembic" inventory alembic revision --autogenerate -m "descricao"
+
+Atenção: o banco `synapseshop` é compartilhado com a API Django. O filtro
+`include_object` do `env.py` restringe o `--autogenerate` às tabelas
+declaradas nos modelos deste microsserviço. Sem ele, o Alembic interpretaria
+`repositories_item`, `repositories_category`, `django_migrations` e
+`django_content_type` como tabelas removidas e geraria um `drop_table`
+destruidor. Mesmo com o filtro, revise sempre a migration gerada antes de
+aplicá-la.
