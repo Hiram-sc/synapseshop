@@ -2,7 +2,10 @@
 
 CRUD de itens de estoque sob o prefixo `/inventory/items`, com tipagem
 estática (`response_model`), validação via modelos Pydantic e respostas
-padrão (201 Created, 200 OK, 204 No Content, 404 Not Found).
+padrão (201 Created, 200 OK, 204 No Content, 404 Not Found, 409 Conflict).
+
+As rotas não conhecem o SQLAlchemy: recebem um `InventoryStore` por
+dependência e traduzem apenas os erros de domínio em respostas HTTP.
 """
 
 from __future__ import annotations
@@ -12,7 +15,7 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from .schemas import InventoryItem, InventoryItemCreate, InventoryItemUpdate
-from .storage import InventoryStore, get_store
+from .storage import DuplicateSkuError, InventoryStore, get_store
 
 router = APIRouter(prefix="/inventory", tags=["inventory"])
 
@@ -32,11 +35,17 @@ def list_items(store: InventoryStore = Depends(get_store)) -> List[InventoryItem
     response_model=InventoryItem,
     status_code=status.HTTP_201_CREATED,
     summary="Cria um novo item de estoque",
+    responses={status.HTTP_409_CONFLICT: {"description": "SKU já cadastrado."}},
 )
 def create_item(
     payload: InventoryItemCreate, store: InventoryStore = Depends(get_store)
 ) -> InventoryItem:
-    return store.create_item(payload)
+    try:
+        return store.create_item(payload)
+    except DuplicateSkuError as erro:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(erro)
+        ) from erro
 
 
 @router.get(
@@ -60,14 +69,22 @@ def get_item(item_id: int, store: InventoryStore = Depends(get_store)) -> Invent
     response_model=InventoryItem,
     status_code=status.HTTP_200_OK,
     summary="Atualiza parcialmente um item de estoque",
-    responses={status.HTTP_404_NOT_FOUND: {"description": "Item não encontrado."}},
+    responses={
+        status.HTTP_404_NOT_FOUND: {"description": "Item não encontrado."},
+        status.HTTP_409_CONFLICT: {"description": "SKU já cadastrado."},
+    },
 )
 def update_item(
     item_id: int,
     payload: InventoryItemUpdate,
     store: InventoryStore = Depends(get_store),
 ) -> InventoryItem:
-    item = store.update_item(item_id, payload)
+    try:
+        item = store.update_item(item_id, payload)
+    except DuplicateSkuError as erro:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(erro)
+        ) from erro
     if item is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Item não encontrado."

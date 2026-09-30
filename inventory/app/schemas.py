@@ -34,6 +34,7 @@ class InventoryItem(BaseModel):
     name: str
     quantity: int = Field(ge=0, description="Quantidade em estoque (não negativa).")
     created_at: datetime
+    updated_at: datetime
 
 
 class InventoryItemCreate(BaseModel):
