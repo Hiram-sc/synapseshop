@@ -32,6 +32,14 @@ RUN useradd --create-home appuser
 # copia o código da aplicação para o diretório /app do container
 COPY app ./app
 
+# copia a configuração e os scripts do Alembic para permitir as migrações
+COPY alembic.ini .
+COPY alembic ./alembic
+
+# copia os testes e a coleta de tempos da Aula 6
+COPY tests ./tests
+COPY scripts ./scripts
+
 # altera o proprietário dos arquivos/diretórios
 RUN chown -R appuser:appuser /app
 
