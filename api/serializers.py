@@ -2,7 +2,41 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
-from repositories.models import Category, Item
+from repositories.models import Category, Item, User
+
+
+class UserSerializer(serializers.ModelSerializer):
+    """Dados públicos de um usuário logado.
+
+    `password` e `last_login` ficam de fora de propósito: a senha nunca
+    retorna na API, nem mesmo como hash.
+    """
+
+    class Meta:
+        model = User
+        fields = ["id", "username", "email", "role", "is_active"]
+        read_only_fields = fields
+
+
+class LoginSerializer(serializers.Serializer):
+    """Credenciais recebidas no endpoint de login.
+
+    `max_length=128` acompanha a convenção do próprio Django (a coluna
+    `password` do `AbstractUser` tem 128 caracteres e é onde o hash cabe), e
+    `trim_whitespace=False` evita que um espaço no fim da senha que o usuário
+    digitou seja apagado silenciosamente.
+
+    O `style` abaixo não é segurança: ele só faz a Browsable API renderizar o
+    campo como senha. O que protege o dado de verdade é a resposta nunca
+    devolver a senha e o cliente não guardá-la.
+    """
+
+    username = serializers.CharField(max_length=150)
+    password = serializers.CharField(
+        max_length=128,
+        style={"input_type": "password"},
+        trim_whitespace=False,
+    )
 
 
 class CategorySerializer(serializers.ModelSerializer):

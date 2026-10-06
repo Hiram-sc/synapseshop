@@ -12,6 +12,11 @@ services:
       POSTGRES_DB: synapseshop
       POSTGRES_USER: synapseshop
       POSTGRES_PASSWORD: synapseshop
+      # Aula 7 - assinatura e expiracao do JWT.
+      # Os valores abaixo são apenas para desenvolvimento; em produção a
+      # chave sai do secret manager, nunca de um arquivo versionado.
+      JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:-dev-only-jwt-key-troque-em-producao}
+      JWT_ACCESS_TOKEN_LIFETIME_MINUTES: ${JWT_ACCESS_TOKEN_LIFETIME_MINUTES:-30}
     restart: unless-stopped
 
   inventory:
