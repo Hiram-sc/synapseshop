@@ -102,6 +102,7 @@ REST_FRAMEWORK = {
         "login": os.environ.get("THROTTLE_LOGIN_RATE", "5/min"),
         "admin_write": os.environ.get("THROTTLE_ADMIN_WRITE_RATE", "30/min"),
     },
+    "TEST_REQUEST_DEFAULT_FORMAT": "json",
 }
 
 # Assinatura e expiração do JWT. A chave nunca é escrita no código: vem do
