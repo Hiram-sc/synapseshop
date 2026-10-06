@@ -2,28 +2,97 @@
   "info": {
     "_postman_id": "22545c7b-18f0-4643-adca-90ed2e75d247",
     "name": "API - Categories e Items",
+    "description": "Coleção da API Django do SynapseShop.\n\n**Ordem sugerida:** `Autenticacao (JWT)` -> `Autorizacao (401 vs 403)` -> `Paginacao e Filtros` -> `Categories` -> `Items`.\n\nAs requisições de `Autenticacao` guardam o token em `{{admin_token}}` e `{{user_token}}`; as de escrita usam `{{admin_token}}` no header `Authorization`.\n\n**Atenção ao throttling:** a pasta `Throttling (429)` esgota a janela de login (5/min por IP). Rode ela sozinha, ou espere ~60 segundos entre execuções - caso contrário o login já responde 429 antes mesmo de o teste rodar.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
     "_exporter_id": "58481486",
     "_collection_link": "https://go.postman.co/collection/58481486-22545c7b-18f0-4643-adca-90ed2e75d247?source=collection_link"
   },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://127.0.0.1:8000",
+      "type": "string"
+    },
+    {
+      "key": "admin_username",
+      "value": "admin",
+      "type": "string"
+    },
+    {
+      "key": "admin_password",
+      "value": "admin-dev-123",
+      "type": "string"
+    },
+    {
+      "key": "user_username",
+      "value": "user",
+      "type": "string"
+    },
+    {
+      "key": "user_password",
+      "value": "user-dev-123",
+      "type": "string"
+    },
+    {
+      "key": "admin_token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "user_token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "categoria_id",
+      "value": "1",
+      "type": "string"
+    },
+    {
+      "key": "item_id",
+      "value": "1",
+      "type": "string"
+    }
+  ],
   "item": [
     {
-      "name": "Categories",
+      "name": "Autenticacao (JWT)",
+      "description": "Login e leitura do token. `POST /auth/login/` é pública e limitada a 5/min por IP; `GET /auth/me/` exige `Authorization: Bearer <token>`.",
       "item": [
         {
-          "name": "http://127.0.0.1:8000/api/v1/categories/",
-          "protocolProfileBehavior": {
-            "disableCookies": false,
-            "followRedirects": true,
-            "maxResponseSize": 52428800,
-            "strictSSL": false
-          },
+          "name": "Login admin - 200",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('devolve access token', () => pm.expect(body.access).to.be.a('string').and.not.empty);",
+                  "pm.test('token_type e Bearer', () => pm.expect(body.token_type).to.eql('Bearer'));",
+                  "pm.test('expires_in positivo', () => pm.expect(body.expires_in).to.be.above(0));",
+                  "pm.test('devolve o admin', () => pm.expect(body.user.username).to.eql('admin'));",
+                  "pm.test('devolve a role admin', () => pm.expect(body.user.role).to.eql('admin'));",
+                  "pm.test('nunca devolve a senha', () => pm.expect(body.user).to.not.have.property('password'));",
+                  "",
+                  "// guarda o token para as pastas seguintes",
+                  "pm.collectionVariables.set('admin_token', body.access);"
+                ]
+              }
+            }
+          ],
           "request": {
-            "method": "GET",
-            "header": [],
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
-              "raw": "",
+              "raw": "{\n    \"username\": \"{{admin_username}}\",\n    \"password\": \"{{admin_password}}\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -31,39 +100,48 @@
               }
             },
             "url": {
-              "raw": "http://127.0.0.1:8000/api/v1/categories/",
-              "protocol": "http",
+              "raw": "{{base_url}}/api/v1/auth/login/",
               "host": [
-                "127",
-                "0",
-                "0",
-                "1"
+                "{{base_url}}"
               ],
-              "port": "8000",
               "path": [
                 "api",
                 "v1",
-                "categories",
-                ""
+                "auth",
+                "login"
               ]
             }
           },
           "response": []
         },
         {
-          "name": "http://127.0.0.1:8000/api/v1/categories/1",
-          "protocolProfileBehavior": {
-            "disableCookies": false,
-            "followRedirects": true,
-            "maxResponseSize": 52428800,
-            "strictSSL": false
-          },
+          "name": "Login user - 200",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('devolve a role user', () => pm.expect(body.user.role).to.eql('user'));",
+                  "",
+                  "pm.collectionVariables.set('user_token', body.access);"
+                ]
+              }
+            }
+          ],
           "request": {
-            "method": "GET",
-            "header": [],
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
-              "raw": "",
+              "raw": "{\n    \"username\": \"{{user_username}}\",\n    \"password\": \"{{user_password}}\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -71,15 +149,1277 @@
               }
             },
             "url": {
-              "raw": "http://127.0.0.1:8000/api/v1/categories/1",
-              "protocol": "http",
+              "raw": "{{base_url}}/api/v1/auth/login/",
               "host": [
-                "127",
-                "0",
-                "0",
-                "1"
+                "{{base_url}}"
               ],
-              "port": "8000",
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Login senha errada - 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 401', () => pm.response.to.have.status(401));",
+                  "pm.test('mensagem generica', () => pm.expect(pm.response.json().detail).to.eql('Usuário ou senha inválidos.'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"username\": \"{{admin_username}}\",\n    \"password\": \"senha-errada\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Login usuario inexistente - 401 (mesma mensagem)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 401', () => pm.response.to.have.status(401));",
+                  "pm.test('nao revela que o usuario nao existe', () => pm.expect(pm.response.json().detail).to.eql('Usuário ou senha inválidos.'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"username\": \"nao-existe\",\n    \"password\": \"{{admin_password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Login sem senha - 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 400', () => pm.response.to.have.status(400));",
+                  "pm.test('aponta o campo faltante', () => pm.expect(pm.response.json()).to.have.property('password'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"username\": \"{{admin_username}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Me com token admin - 200",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('identifica o admin', () => pm.expect(body.username).to.eql('admin'));",
+                  "pm.test('confirma a role', () => pm.expect(body.role).to.eql('admin'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_token}}",
+                "description": "Token devolvido por POST /auth/login/"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/me/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "me"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Me com token user - 200",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200));",
+                  "pm.test('confirma a role user', () => pm.expect(pm.response.json().role).to.eql('user'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{user_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/me/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "me"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Me sem token - 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 401 (nao sei quem e voce)', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/me/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "me"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Me com token invalido - 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer nao-e-um-jwt-valido",
+                "description": "token adulterado: a assinatura nao confere"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/me/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "me"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Autorizacao (401 vs 403)",
+      "description": "401 = identidade desconhecida. 403 = identidade conhecida, operação não permitida. Leitura do catálogo é pública; escrita exige `role admin`.",
+      "item": [
+        {
+          "name": "POST categoria sem token - 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 401 e nao 403', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"name\": \"Sem token\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/categories/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "categories"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST categoria com token user - 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 403 (identifiquei voce, mas nao pode)', () => pm.response.to.have.status(403));",
+                  "pm.test('usa o detalhe padrao do DRF', () => pm.expect(pm.response.json()).to.have.property('detail'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{user_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"name\": \"Tentativa do user\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/categories/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "categories"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST item com token user - 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 403', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{user_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"name\": \"Mouse\",\n    \"price\": \"129.90\",\n    \"category\": {{categoria_id}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/items/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "items"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET itens com token invalido - 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer nao-e-um-jwt-valido"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/items/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "items"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET itens anonimo - 200 (leitura publica)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200 sem token', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/items/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "items"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST categoria com token admin - 201",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 201 ou 400 (nome ja existe)', () => pm.expect([201, 400]).to.include(pm.response.code));",
+                  "",
+                  "// `Category.name` e unico: na segunda execucao o POST volta 400.",
+                  "// A colecao precisa guardar o id dos dois jeitos, senao as",
+                  "// requisicoes seguintes ficam sem categoria para trabalhar.",
+                  "if (pm.response.code === 201) {",
+                  "    pm.collectionVariables.set('categoria_id', pm.response.json().id);",
+                  "} else {",
+                  "    pm.sendRequest({",
+                  "        url: pm.variables.replaceIn(pm.collectionVariables.get('base_url') + '/api/v1/categories/?search=Livros'),",
+                  "        method: 'GET',",
+                  "        header: [{ key: 'Authorization', value: 'Bearer ' + pm.collectionVariables.get('admin_token') }]",
+                  "    }, function (err, res) {",
+                  "        pm.test('recupera o id da categoria existente', function () {",
+                  "            const achado = res.json().results[0].id;",
+                  "            pm.collectionVariables.set('categoria_id', achado);",
+                  "            pm.expect(achado).to.be.above(0);",
+                  "        });",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"name\": \"Livros\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/categories/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "categories"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST item com token admin - 201",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 201 ou 400 (nome ja existe)', () => pm.expect([201, 400]).to.include(pm.response.code));",
+                  "",
+                  "if (pm.response.code === 201) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('item_id', body.id);",
+                  "    pm.test('devolve o preco como string', () => pm.expect(body.price).to.be.a('string'));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"name\": \"Livro de Python\",\n    \"description\": \"Capitulo de seguranca\",\n    \"price\": \"79.90\",\n    \"category\": {{categoria_id}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/items/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "items"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Throttling (429)",
+      "description": "Rode esta pasta **sozinha**: o login aceita 5 tentativas por minuto por IP, então as requisições anteriores da coleção consomem a janela. O 6º login errado deve responder 429 com `Retry-After`. Para ver o limite de escrita (`admin_write`, 30/min) sem esperar, suba o container com `THROTTLE_ADMIN_WRITE_RATE=3/min`.",
+      "item": [
+        {
+          "name": "Login errado 1/6 - 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ainda dentro do limite: 401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"username\": \"{{admin_username}}\",\n    \"password\": \"senha-errada\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Login errado 2/6 - 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ainda dentro do limite: 401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"username\": \"{{admin_username}}\",\n    \"password\": \"senha-errada\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Login errado 3/6 - 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ainda dentro do limite: 401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"username\": \"{{admin_username}}\",\n    \"password\": \"senha-errada\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Login errado 4/6 - 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ainda dentro do limite: 401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"username\": \"{{admin_username}}\",\n    \"password\": \"senha-errada\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Login errado 5/6 - 401 (ultima da janela)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ultima tentativa aceita: 401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"username\": \"{{admin_username}}\",\n    \"password\": \"senha-errada\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Login errado 6/6 - 429 com Retry-After",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 429 (limite estourado)', () => pm.response.to.have.status(429));",
+                  "pm.test('informa Retry-After', () => pm.expect(pm.response.headers.get('Retry-After')).to.be.above(0));",
+                  "pm.test('explica a espera em portugues', () => pm.expect(pm.response.json().detail).to.be.a('string'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"username\": \"{{admin_username}}\",\n    \"password\": \"senha-errada\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Paginacao e Filtros",
+      "description": "As listas respondem no envelope do DRF: `count`, `next`, `previous`, `results`. `?limit=` tem teto de 100; `?ordering=` fora da lista branca e ignorado.",
+      "item": [
+        {
+          "name": "GET itens - pagina 1 (limit 2)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('tem o envelope de paginacao', () => pm.expect(body).to.have.all.keys('count', 'next', 'previous', 'results'));",
+                  "pm.test('respeita o limit', () => pm.expect(body.results.length).to.be.at.most(2));",
+                  "pm.test('informa o total', () => pm.expect(body.count).to.be.at.least(1));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/items/?page=1&limit=2",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "items"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "2"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET itens - pagina 2",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200));",
+                  "pm.test('volta a pagina anterior', () => pm.expect(pm.response.json().previous).to.not.be.null);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/items/?page=2&limit=2",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "items"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "2"
+                },
+                {
+                  "key": "limit",
+                  "value": "2"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET itens - pagina inexistente - 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 404', () => pm.response.to.have.status(404));",
+                  "pm.test('avisa que a pagina nao existe', () => pm.expect(pm.response.json().detail).to.be.a('string'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/items/?page=999",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "items"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "999"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET itens - busca por texto",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200));",
+                  "pm.test('filtra pelo termo', () => pm.expect(pm.response.json().count).to.be.above(0));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/items/?search=Python",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "items"
+              ],
+              "query": [
+                {
+                  "key": "search",
+                  "value": "Python"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET itens - filtro por categoria e is_active",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('todos os itens sao da categoria pedida', () => {",
+                  "    body.results.forEach(item => pm.expect(item.category).to.eql(Number(pm.collectionVariables.get('categoria_id'))));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/items/?category={{categoria_id}}&is_active=true",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "items"
+              ],
+              "query": [
+                {
+                  "key": "category",
+                  "value": "{{categoria_id}}"
+                },
+                {
+                  "key": "is_active",
+                  "value": "true"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET itens - ordenacao por preco",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200));",
+                  "const precos = pm.response.json().results.map(i => parseFloat(i.price));",
+                  "pm.test('precos em ordem decrescente', () => {",
+                  "    const ordenados = [...precos].sort((a, b) => b - a);",
+                  "    pm.expect(precos).to.eql(ordenados);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/items/?ordering=-price",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "items"
+              ],
+              "query": [
+                {
+                  "key": "ordering",
+                  "value": "-price"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET itens - filtro com valor invalido - 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/items/?category=abc",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "items"
+              ],
+              "query": [
+                {
+                  "key": "category",
+                  "value": "abc",
+                  "description": "category e inteiro: texto nao e um id"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET categorias - paginadas e filtradas",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200));",
+                  "pm.test('filtra pelo termo', () => pm.expect(pm.response.json().count).to.be.above(0));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/categories/?search=Liv&limit=5",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "categories"
+              ],
+              "query": [
+                {
+                  "key": "search",
+                  "value": "Liv"
+                },
+                {
+                  "key": "limit",
+                  "value": "5"
+                }
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Categories",
+      "description": "Leitura pública, escrita com `{{admin_token}}`. As duas últimas requisições (payload vazio) continuam existindo para mostrar a validação do corpo: com token elas respondem 400.",
+      "item": [
+        {
+          "name": "GET /categories/ - listar (publico)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/categories/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "categories"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /categories/1 - detalhe",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/categories/1",
+              "host": [
+                "{{base_url}}"
+              ],
               "path": [
                 "api",
                 "v1",
@@ -91,35 +1431,15 @@
           "response": []
         },
         {
-          "name": "http://127.0.0.1:8000/api/v1/categories/99999",
-          "protocolProfileBehavior": {
-            "disableCookies": false,
-            "followRedirects": true,
-            "maxResponseSize": 52428800,
-            "strictSSL": false
-          },
+          "name": "GET /categories/99999 - inexistente - 404",
           "request": {
             "method": "GET",
             "header": [],
-            "body": {
-              "mode": "raw",
-              "raw": "",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            },
             "url": {
-              "raw": "http://127.0.0.1:8000/api/v1/categories/99999",
-              "protocol": "http",
+              "raw": "{{base_url}}/api/v1/categories/99999",
               "host": [
-                "127",
-                "0",
-                "0",
-                "1"
+                "{{base_url}}"
               ],
-              "port": "8000",
               "path": [
                 "api",
                 "v1",
@@ -131,19 +1451,22 @@
           "response": []
         },
         {
-          "name": "http://127.0.0.1:8000/api/v1/categories/",
-          "protocolProfileBehavior": {
-            "disableCookies": false,
-            "followRedirects": true,
-            "maxResponseSize": 52428800,
-            "strictSSL": false
-          },
+          "name": "POST /categories/ - criar (admin)",
           "request": {
             "method": "POST",
-            "header": [],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
-              "raw": "{\r\n    \"name\": \"Eletrônicos\"\r\n}",
+              "raw": "{\n    \"name\": \"Eletrônicos\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -151,36 +1474,33 @@
               }
             },
             "url": {
-              "raw": "http://127.0.0.1:8000/api/v1/categories/",
-              "protocol": "http",
+              "raw": "{{base_url}}/api/v1/categories/",
               "host": [
-                "127",
-                "0",
-                "0",
-                "1"
+                "{{base_url}}"
               ],
-              "port": "8000",
               "path": [
                 "api",
                 "v1",
-                "categories",
-                ""
+                "categories"
               ]
             }
           },
           "response": []
         },
         {
-          "name": "http://127.0.0.1:8000/api/v1/categories/",
-          "protocolProfileBehavior": {
-            "disableCookies": false,
-            "followRedirects": true,
-            "maxResponseSize": 52428800,
-            "strictSSL": false
-          },
+          "name": "POST /categories/ sem corpo - 400 (validacao)",
           "request": {
             "method": "POST",
-            "header": [],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{}",
@@ -191,20 +1511,14 @@
               }
             },
             "url": {
-              "raw": "http://127.0.0.1:8000/api/v1/categories/",
-              "protocol": "http",
+              "raw": "{{base_url}}/api/v1/categories/",
               "host": [
-                "127",
-                "0",
-                "0",
-                "1"
+                "{{base_url}}"
               ],
-              "port": "8000",
               "path": [
                 "api",
                 "v1",
-                "categories",
-                ""
+                "categories"
               ]
             }
           },
@@ -214,18 +1528,22 @@
     },
     {
       "name": "Items",
+      "description": "Leitura pública, escrita com `{{admin_token}}`. As duas primeiras requisições seguem como estavam; a que manda `category_id` junto de `category` mostra que o campo ignorado é simplesmente descartado pelo serializer.",
       "item": [
         {
-          "name": "http://127.0.0.1:8000/api/v1/items/",
-          "protocolProfileBehavior": {
-            "disableCookies": false,
-            "followRedirects": true,
-            "maxResponseSize": 52428800,
-            "strictSSL": false
-          },
+          "name": "POST /items/ sem corpo - 400 (validacao)",
           "request": {
             "method": "POST",
-            "header": [],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{}",
@@ -236,39 +1554,36 @@
               }
             },
             "url": {
-              "raw": "http://127.0.0.1:8000/api/v1/items/",
-              "protocol": "http",
+              "raw": "{{base_url}}/api/v1/items/",
               "host": [
-                "127",
-                "0",
-                "0",
-                "1"
+                "{{base_url}}"
               ],
-              "port": "8000",
               "path": [
                 "api",
                 "v1",
-                "items",
-                ""
+                "items"
               ]
             }
           },
           "response": []
         },
         {
-          "name": "http://127.0.0.1:8000/api/v1/items/",
-          "protocolProfileBehavior": {
-            "disableCookies": false,
-            "followRedirects": true,
-            "maxResponseSize": 52428800,
-            "strictSSL": false
-          },
+          "name": "POST /items/ - criar (admin)",
           "request": {
             "method": "POST",
-            "header": [],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
-              "raw": "{\r\n    \"name\": \"Notebook\",\r\n    \"category_id\": 1,\r\n    \"price\": 3000,\r\n    \"category\": 2\r\n}",
+              "raw": "{\n    \"name\": \"Notebook\",\n    \"category_id\": 1,\n    \"price\": \"3000.00\",\n    \"category\": {{categoria_id}}\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -276,55 +1591,29 @@
               }
             },
             "url": {
-              "raw": "http://127.0.0.1:8000/api/v1/items/",
-              "protocol": "http",
+              "raw": "{{base_url}}/api/v1/items/",
               "host": [
-                "127",
-                "0",
-                "0",
-                "1"
+                "{{base_url}}"
               ],
-              "port": "8000",
               "path": [
                 "api",
                 "v1",
-                "items",
-                ""
+                "items"
               ]
             }
           },
           "response": []
         },
         {
-          "name": "http://127.0.0.1:8000/api/v1/items/99999",
-          "protocolProfileBehavior": {
-            "disableCookies": false,
-            "followRedirects": true,
-            "maxResponseSize": 52428800,
-            "strictSSL": false
-          },
+          "name": "GET /items/99999 - inexistente - 404",
           "request": {
             "method": "GET",
             "header": [],
-            "body": {
-              "mode": "raw",
-              "raw": "",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            },
             "url": {
-              "raw": "http://127.0.0.1:8000/api/v1/items/99999",
-              "protocol": "http",
+              "raw": "{{base_url}}/api/v1/items/99999",
               "host": [
-                "127",
-                "0",
-                "0",
-                "1"
+                "{{base_url}}"
               ],
-              "port": "8000",
               "path": [
                 "api",
                 "v1",
@@ -336,75 +1625,34 @@
           "response": []
         },
         {
-          "name": "http://127.0.0.1:8000/api/v1/items/",
-          "protocolProfileBehavior": {
-            "disableCookies": false,
-            "followRedirects": true,
-            "maxResponseSize": 52428800,
-            "strictSSL": false
-          },
+          "name": "GET /items/ - listar (publico)",
           "request": {
             "method": "GET",
             "header": [],
-            "body": {
-              "mode": "raw",
-              "raw": "",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            },
             "url": {
-              "raw": "http://127.0.0.1:8000/api/v1/items/",
-              "protocol": "http",
+              "raw": "{{base_url}}/api/v1/items/",
               "host": [
-                "127",
-                "0",
-                "0",
-                "1"
+                "{{base_url}}"
               ],
-              "port": "8000",
               "path": [
                 "api",
                 "v1",
-                "items",
-                ""
+                "items"
               ]
             }
           },
           "response": []
         },
         {
-          "name": "http://127.0.0.1:8000/api/v1/items/1",
-          "protocolProfileBehavior": {
-            "disableCookies": false,
-            "followRedirects": true,
-            "maxResponseSize": 52428800,
-            "strictSSL": false
-          },
+          "name": "GET /items/1 - detalhe",
           "request": {
             "method": "GET",
             "header": [],
-            "body": {
-              "mode": "raw",
-              "raw": "",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            },
             "url": {
-              "raw": "http://127.0.0.1:8000/api/v1/items/1",
-              "protocol": "http",
+              "raw": "{{base_url}}/api/v1/items/1",
               "host": [
-                "127",
-                "0",
-                "0",
-                "1"
+                "{{base_url}}"
               ],
-              "port": "8000",
               "path": [
                 "api",
                 "v1",
