@@ -1,6 +1,7 @@
 from django.http import JsonResponse
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters, viewsets
+from rest_framework.exceptions import NotFound
 from rest_framework.generics import GenericAPIView
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -17,7 +18,12 @@ from api.serializers import (
 )
 from api.throttling import LoginRateThrottle
 from repositories.models import Category, Item
+from services import cache as cache_service
+from services import events
 from services.auth_service import AuthService, InactiveUser, InvalidCredentials
+
+#: header que diz de onde veio a resposta do catálogo
+HEADER_CACHE = "X-Cache"
 
 
 def health(request):
@@ -95,6 +101,15 @@ class MeView(GenericAPIView):
         return Response(self.serializer_class(request.user).data)
 
 
+def _ids_dos_itens(categoria: Category) -> list:
+    """Ids dos itens de uma categoria.
+
+    Precisa ser consultado **antes** de apagar a categoria: o `CASCADE` leva os
+    itens junto e, depois do `DELETE`, não há mais de onde tirar esses ids para
+    invalidar o detalhe de cada um.
+    """
+    return list(categoria.items.values_list("id", flat=True))
+
 
 class CategoryViewSet(viewsets.ModelViewSet):
     """CRUD de categorias.
@@ -102,6 +117,11 @@ class CategoryViewSet(viewsets.ModelViewSet):
     Leitura (`GET`) é pública; escrita exige `role admin` e o limite de
     escrita (30/min por usuário). `?search=` e `?ordering=` funcionam nas
     duas direções da operação, com a mesma paginação dos itens.
+
+    A listagem de categorias **não** é cacheada (o volume é pequeno e a
+    invalidação não custaria caro), mas toda escrita aqui invalida o cache de
+    `Item`: o `category_name` aparece no detalhe de cada item e a categoria
+    também é filtro da listagem de itens.
     """
 
     queryset = Category.objects.all()
@@ -114,8 +134,41 @@ class CategoryViewSet(viewsets.ModelViewSet):
     # escopo lido pelo DRF; `AdminWriteThrottle` só o conta nas escritas
     throttle_scope = "admin_write"
 
+    def perform_create(self, serializer):
+        categoria = serializer.save()
+        events.publicar(events.CATEGORIA_CRIADA, categoria_id=categoria.id)
+
+    def perform_update(self, serializer):
+        categoria = serializer.save()
+        events.publicar(
+            events.CATEGORIA_ATUALIZADA,
+            categoria_id=categoria.id,
+            item_ids=_ids_dos_itens(categoria),
+        )
+
+    def perform_destroy(self, instance):
+        categoria_id = instance.id
+        item_ids = _ids_dos_itens(instance)
+        instance.delete()
+        events.publicar(
+            events.CATEGORIA_REMOVIDA,
+            categoria_id=categoria_id,
+            item_ids=item_ids,
+        )
+
 
 class ItemViewSet(viewsets.ModelViewSet):
+    """CRUD de itens do catálogo, com cache-aside nas leituras.
+
+    Mesmas regras de `CategoryViewSet`, somando os filtros `?is_active=` e
+    `?category=` - eles são os que sustentam os índices compostos de
+    `repositories.models.Item`.
+
+    As duas leituras (`list` e `retrieve`) são cache-aside: o cache do Redis é
+    consultado primeiro e, quando não há nada, o PostgreSQL responde e o
+    resultado é gravado. A resposta sempre traz `X-Cache: HIT|MISS|BYPASS`, e
+    toda escrita publica um evento que invalida o que ficou velho.
+    """
 
     queryset = Item.objects.select_related("category").all()
     serializer_class = ItemSerializer
@@ -130,3 +183,91 @@ class ItemViewSet(viewsets.ModelViewSet):
     search_fields = ["name", "description"]
     ordering_fields = ["name", "price", "created_at", "updated_at"]
     throttle_scope = "admin_write"
+
+    # -- leitura com cache --------------------------------------------------
+    def list(self, request, *args, **kwargs):
+        """Listagem paginada: o `?page=` seguinte não custa consulta nenhuma.
+
+        O que vai para o cache é só o que depende do banco (`count` e
+        `results`). `next`/`previous` são remontados a cada requisição, porque
+        são URLs absolutas: cacheá-las faria o cache guardar o host que o
+        cliente usou, e o link da página 2 responderia errado para quem chega
+        por outro nome de máquina.
+        """
+        digest = cache_service.digest_listagem(
+            page=request.query_params.get(self.pagination_class.page_query_param)
+            or 1,
+            limit=self.paginator.get_page_size(request),
+            ordering=request.query_params.get(
+                self.filter_backends[1].ordering_param
+            ),
+            search=request.query_params.get(
+                self.filter_backends[0].search_param
+            ),
+            is_active=request.query_params.get("is_active"),
+            category=request.query_params.get("category"),
+        )
+        payload, estado = cache_service.obter_listagem(
+            digest, lambda: self._listagem_sem_cache(request)
+        )
+
+        # o `page` é reconstruído nos dois casos (MISS e HIT) para que o envelope
+        # saia idêntico ao que a paginação do DRF produziria
+        self.paginator.preparar_pagina_cacheada(
+            request, payload["count"], request.query_params.get("page") or 1
+        )
+        resposta = Response(
+            {
+                "count": payload["count"],
+                "next": self.paginator.get_next_link(),
+                "previous": self.paginator.get_previous_link(),
+                "results": payload["results"],
+            }
+        )
+        resposta[HEADER_CACHE] = estado
+        return resposta
+
+    def _listagem_sem_cache(self, request):
+        """Caminho tradicional: filtro, paginação e serialização no banco."""
+        pagina = self.paginate_queryset(self.filter_queryset(self.get_queryset()))
+        serializer = self.get_serializer(pagina, many=True)
+        return {
+            "count": self.paginator.page.paginator.count,
+            "results": serializer.data,
+        }
+
+    def retrieve(self, request, *args, **kwargs):
+        """Detalhe de um item, endereçado pelo id - logo, chave direta no cache.
+
+        `check_object_permissions` não é chamado aqui (o `get_object` do DRF
+        chamaria) porque a permissão do projeto é só de view: `ReadOnlyOrIsAdmin`
+        não define `has_object_permission`. Se um dia existir permissão por
+        objeto, é aqui que ela precisa entrar.
+        """
+        item_id = kwargs[self.lookup_field]
+
+        def calcular():
+            item = self.get_queryset().filter(pk=item_id).first()
+            return None if item is None else self.get_serializer(item).data
+
+        payload, estado = cache_service.obter_detalhe(item_id, calcular)
+        if payload is None:
+            # mesmo status e mesma mensagem do `get_object` do DRF
+            raise NotFound()
+        resposta = Response(payload)
+        resposta[HEADER_CACHE] = estado
+        return resposta
+
+    # -- escrita com invalidação -------------------------------------------
+    def perform_create(self, serializer):
+        item = serializer.save()
+        events.publicar(events.ITEM_CRIADO, item_id=item.id)
+
+    def perform_update(self, serializer):
+        item = serializer.save()
+        events.publicar(events.ITEM_ATUALIZADO, item_id=item.id)
+
+    def perform_destroy(self, instance):
+        item_id = instance.id
+        instance.delete()
+        events.publicar(events.ITEM_REMOVIDO, item_id=item_id)

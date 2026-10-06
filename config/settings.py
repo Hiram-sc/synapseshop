@@ -129,3 +129,93 @@ if DEBUG and len(SIMPLE_JWT["SIGNING_KEY"].encode()) < 32:
         RuntimeWarning,
         stacklevel=2,
     )
+
+# ---------------------------------------------------------------------------
+# Aula 8 - cache-aside com Redis
+# ---------------------------------------------------------------------------
+# O Redis é o cache default do Django: além do catálogo, é onde o contador do
+# throttling da Aula 7 passa a morar (ver `api/throttling.py`).
+REDIS_HOST = os.environ.get("REDIS_HOST", "redis")
+REDIS_PORT = os.environ.get("REDIS_PORT", "6379")
+REDIS_DB = os.environ.get("REDIS_DB", "0")
+# `REDIS_URL` inteiro pode ser injetado (útil quando o Redis exige senha);
+# sem ele, a URL é montada a partir das três variáveis acima.
+REDIS_URL = os.environ.get("REDIS_URL") or f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
+
+# Kill-switch do cache. Com `false`, toda leitura vai direto ao PostgreSQL e o
+# header `X-Cache` responde `BYPASS` - é o botão de emergência para desligar o
+# cache sem derrubar e sem reiniciar a aplicação.
+CACHE_ENABLED = os.environ.get("CACHE_ENABLED", "true").lower() in ("1", "true", "yes")
+
+# TTLs do cache-aside. A listagem muda mais rápido (e é a rota mais pesada,
+# com `COUNT` + ordenação), então expira antes; o detalhe de um item é estável
+# e pode ficar mais tempo no cache.
+CACHE_TTL_LISTA = int(os.environ.get("CACHE_TTL_LISTA", "60"))
+CACHE_TTL_DETALHE = int(os.environ.get("CACHE_TTL_DETALHE", "300"))
+
+# Prefixo aplicado pelo Django a todas as chaves, para o mesmo Redis poder
+# servir outra aplicação sem colisão de nomes.
+CACHE_KEY_PREFIX = os.environ.get("CACHE_KEY_PREFIX", "synapseshop")
+
+CACHES = {
+    "default": {
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": REDIS_URL,
+        "KEY_PREFIX": CACHE_KEY_PREFIX,
+        # TTL padrão quando o `cache.set()` não recebe timeout explícito
+        "TIMEOUT": CACHE_TTL_LISTA,
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+            # fail-open: erro do Redis vira `None` em vez de exceção, para que
+            # uma falha de cache nunca vire indisponibilidade da API
+            "IGNORE_EXCEPTIONS": True,
+            # o padrão do django-redis é pickle. Trocar por JSON deixa o valor
+            # gravado legível (`redis-cli GET ...`) e independente da versão do
+            # Python: o payload do catálogo já é normalizado para JSON puro em
+            # `services/cache.py`, e os contadores de throttling são inteiros.
+            "SERIALIZER": "django_redis.serializers.json.JSONSerializer",
+            # com o Redis travado, nenhuma operação pode segurar a requisição
+            # por muito tempo (ver `CACHE_CONNECT_TIMEOUT`)
+            "SOCKET_CONNECT_TIMEOUT": float(
+                os.environ.get("CACHE_CONNECT_TIMEOUT", "1")
+            ),
+            "SOCKET_TIMEOUT": float(os.environ.get("CACHE_SOCKET_TIMEOUT", "1")),
+        },
+    }
+}
+
+# Desligado por padrão: o django-redis loga a *traceback inteira* de cada
+# operação engolida, e com o Redis fora do ar isso vira uma linha de stack por
+# requisição. Quem registra o erro é a camada de cache da aplicação
+# (`services/cache.py`), que sabe dizer qual endpoint falhou e limiter o log.
+# Ligue esta flag para depurar uma conexão que não está sendo estabelecida.
+DJANGO_REDIS_LOG_IGNORED_EXCEPTIONS = (
+    os.environ.get("CACHE_LOG_IGNORED_EXCEPTIONS", "false").lower()
+    in ("1", "true", "yes")
+)
+
+# O Django não configura logger nenhum por padrão; sem esta seção, os avisos de
+# cache (falha do Redis, evento de invalidação) apareceriam sem contexto. Só o
+# que a aplicação registra sai daqui - o nível é ajustável pelo ambiente.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "simples": {
+            "format": "%(asctime)s %(levelname)s %(name)s %(message)s",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "simples",
+        },
+    },
+    "loggers": {
+        "django": {"handlers": ["console"], "level": "INFO", "propagate": False},
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": os.environ.get("DJANGO_LOG_LEVEL", "INFO"),
+    },
+}
