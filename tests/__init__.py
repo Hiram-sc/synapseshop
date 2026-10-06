@@ -1,10 +1,15 @@
-"""Base dos testes da API Django (SynapseShop, Aula 7).
+"""Base dos testes da API Django (SynapseShop, Aula 8).
 
 Regras comuns a todos os módulos de teste:
 
 * o banco é o PostgreSQL de verdade, em um banco separado (`test_<POSTGRES_DB>`)
   criado e destruído pelo runner do Django - nenhum teste toca no banco de
   desenvolvimento;
+* o cache é limpo entre os testes. No Redis, `cache.clear()` é um `FLUSHDB`:
+  apaga tanto o namespace do catálogo quanto os contadores de throttling, que é
+  exatamente o estado inicial que cada teste precisa;
+* as métricas do cache (hits, misses, bypasses) são zeradas junto, para que um
+  teste não dependa das requisições do anterior;
 * os usuários `admin` e `user` são criados pelo repositório, e não por
   atalhos do Django, para que o caminho testado seja o mesmo da aplicação.
 """
@@ -16,6 +21,8 @@ from rest_framework.test import APITestCase
 
 from repositories.models import Category, Item, Role
 from repositories.user_repository import UserRepository
+from services import cache as cache_service
+from services import events
 from services.auth_service import AuthService
 
 SENHA_ADMIN = "senha-admin-de-teste"
@@ -28,7 +35,9 @@ class ApiTestCaseBase(APITestCase):
     def setUp(self) -> None:
         super().setUp()
         cache.clear()
+        cache_service.zerar_metricas()
         self.addCleanup(cache.clear)
+        self.addCleanup(cache_service.zerar_metricas)
 
         self.users = UserRepository()
         self.auth = AuthService(users=self.users)
@@ -69,3 +78,13 @@ class ApiTestCaseBase(APITestCase):
         )
         self.assertEqual(resposta.status_code, 200, resposta.data)
         return resposta.data["access"]
+
+    def assinar_evento(self, nome: str, callback) -> None:
+        """Inscreve um assinante temporário e o cancela no fim do teste.
+
+        O cancelamento é por assinatura, e não um "limpa tudo": as regras de
+        invalidação do cache foram registradas no boot do processo e precisam
+        continuar ativas para os testes seguintes.
+        """
+        events.inscrever(nome, callback)
+        self.addCleanup(events.cancelar, nome, callback)
