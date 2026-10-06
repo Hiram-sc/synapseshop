@@ -1,11 +1,13 @@
 from django.http import JsonResponse
-from rest_framework import viewsets
+from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework import filters, viewsets
 from rest_framework.generics import GenericAPIView
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.settings import api_settings as jwt_settings
 
+from api.pagination import CatalogoPagination
 from api.permissions import ReadOnlyOrIsAdmin
 from api.serializers import (
     CategorySerializer,
@@ -105,6 +107,10 @@ class CategoryViewSet(viewsets.ModelViewSet):
     queryset = Category.objects.all()
     serializer_class = CategorySerializer
     permission_classes = [ReadOnlyOrIsAdmin]
+    pagination_class = CatalogoPagination
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ["name", "description"]
+    ordering_fields = ["name", "created_at"]
     # escopo lido pelo DRF; `AdminWriteThrottle` só o conta nas escritas
     throttle_scope = "admin_write"
 
@@ -114,4 +120,13 @@ class ItemViewSet(viewsets.ModelViewSet):
     queryset = Item.objects.select_related("category").all()
     serializer_class = ItemSerializer
     permission_classes = [ReadOnlyOrIsAdmin]
+    pagination_class = CatalogoPagination
+    filter_backends = [
+        filters.SearchFilter,
+        filters.OrderingFilter,
+        DjangoFilterBackend,
+    ]
+    filterset_fields = ["is_active", "category"]
+    search_fields = ["name", "description"]
+    ordering_fields = ["name", "price", "created_at", "updated_at"]
     throttle_scope = "admin_write"

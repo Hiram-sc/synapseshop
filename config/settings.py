@@ -20,6 +20,9 @@ INSTALLED_APPS = [
     "django.contrib.auth",
     "django.contrib.staticfiles",
     "rest_framework",
+    # `django_filters` precisa estar instalado para que os templates do
+    # formulário de filtro da Browsable API sejam encontrados
+    "django_filters",
     "repositories",
     "api",
 ]
@@ -82,6 +85,9 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.AllowAny",
     ],
+    # Paginação padrão das listas, com `?page=` e `?limit=`.
+    "DEFAULT_PAGINATION_CLASS": "api.pagination.CatalogoPagination",
+    "PAGE_SIZE": 20,
     # Throttling padrão: por IP para quem não está autenticado e por usuário
     # para quem está. Os limites são lidos do ambiente (ver `THROTTLE_RATES`).
     "DEFAULT_THROTTLE_CLASSES": [

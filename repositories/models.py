@@ -73,7 +73,15 @@ class Item(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        # a ordenação padrão do modelo é reaproveitada pela paginação da API
         ordering = ["name"]
+        indexes = [
+            # a listagem do catálogo filtra por categoria e ordena por nome
+            # (ordenação padrão do modelo), então o par é consultado junto
+            models.Index(fields=["category", "name"], name="ix_item_categoria_nome"),
+            # o mesmo vale para o filtro de itens ativos, muito usado na vitrine
+            models.Index(fields=["is_active", "name"], name="ix_item_ativo_nome"),
+        ]
 
     def __str__(self):
         return self.name
