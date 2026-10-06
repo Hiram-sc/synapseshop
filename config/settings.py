@@ -77,9 +77,25 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ],
+    # Nenhuma rota "abre por acaso": cada view declara explicitamente quem
+    # pode acessá-la em `api/permissions.py`.
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.AllowAny",
     ],
+    # Throttling padrão: por IP para quem não está autenticado e por usuário
+    # para quem está. Os limites são lidos do ambiente (ver `THROTTLE_RATES`).
+    "DEFAULT_THROTTLE_CLASSES": [
+        "api.throttling.AnonRateThrottle",
+        "api.throttling.UserRateThrottle",
+        "api.throttling.AdminWriteThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": os.environ.get("THROTTLE_ANON_RATE", "60/min"),
+        "user": os.environ.get("THROTTLE_USER_RATE", "300/min"),
+        # escopos com regra própria, ver api/throttling.py
+        "login": os.environ.get("THROTTLE_LOGIN_RATE", "5/min"),
+        "admin_write": os.environ.get("THROTTLE_ADMIN_WRITE_RATE", "30/min"),
+    },
 }
 
 # Assinatura e expiração do JWT. A chave nunca é escrita no código: vem do

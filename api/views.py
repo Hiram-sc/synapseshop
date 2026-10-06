@@ -6,12 +6,14 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.settings import api_settings as jwt_settings
 
+from api.permissions import ReadOnlyOrIsAdmin
 from api.serializers import (
     CategorySerializer,
     ItemSerializer,
     LoginSerializer,
     UserSerializer,
 )
+from api.throttling import LoginRateThrottle
 from repositories.models import Category, Item
 from services.auth_service import AuthService, InactiveUser, InvalidCredentials
 
@@ -38,6 +40,10 @@ class LoginView(APIView):
     # a rota de login não valida token nenhum: o cliente ainda não tem um
     authentication_classes = []
     serializer_class = LoginSerializer
+    # `throttle_classes` aqui substitui os limites globais de propósito: o
+    # login é limitado só pela regra de força bruta, com teto bem menor
+    throttle_classes = [LoginRateThrottle]
+    throttle_scope = "login"
 
     def post(self, request):
         serializer = self.serializer_class(data=request.data)
@@ -98,9 +104,14 @@ class CategoryViewSet(viewsets.ModelViewSet):
 
     queryset = Category.objects.all()
     serializer_class = CategorySerializer
+    permission_classes = [ReadOnlyOrIsAdmin]
+    # escopo lido pelo DRF; `AdminWriteThrottle` só o conta nas escritas
+    throttle_scope = "admin_write"
 
 
 class ItemViewSet(viewsets.ModelViewSet):
 
     queryset = Item.objects.select_related("category").all()
     serializer_class = ItemSerializer
+    permission_classes = [ReadOnlyOrIsAdmin]
+    throttle_scope = "admin_write"
