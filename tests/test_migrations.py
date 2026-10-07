@@ -24,7 +24,10 @@ class TestMigrationsReversiveis(TransactionTestCase):
     """Ciclo apply -> rollback -> reapply das migrations de `repositories`."""
 
     migrate_from = [("repositories", "0001_initial")]
-    migrate_to = [("repositories", "0003_item_indexes")]
+    # estado final do projeto: da Aula 9 em diante, a última migration é a que
+    # cria Pedido/PedidoItem/EventoProcessado (`0004_pedido`). O ciclo só é
+    # provado se o reapply voltar exatamente ao schema corrente.
+    migrate_to = [("repositories", "0004_pedido")]
 
     def _aplicar(self, alvos) -> None:
         executor = MigrationExecutor(connection)
