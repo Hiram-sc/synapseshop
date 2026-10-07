@@ -1,11 +1,13 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
-from api.views import CategoryViewSet, ItemViewSet, LoginView, MeView
+from api.views import CategoryViewSet, ItemViewSet, LoginView, MeView, PedidoViewSet
 
 router = DefaultRouter()
 router.register("categories", CategoryViewSet, basename="category")
 router.register("items", ItemViewSet, basename="item")
+# Aula 9 - produtor do evento PedidoCriado (POST) e observabilidade (GET)
+router.register("pedidos", PedidoViewSet, basename="pedido")
 
 # As rotas de autenticação ficam no mesmo `include("api.urls")` do versionamento
 # `/api/v1/`, então ficam acessíveis em `/api/v1/auth/...`:

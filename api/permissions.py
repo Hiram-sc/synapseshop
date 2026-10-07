@@ -52,11 +52,29 @@ class ReadOnlyOrIsAdmin(permissions.BasePermission):
 
     O 403 sai com a mensagem padrão do DRF ("você não tem permissão para
     executar essa ação"), e não com a de `IsAdmin`. É deliberado: o cliente já
-    sabe que precisa de admin porque é o dono da tela; quem estiver sondando a
-    API não ganha de graça a confirmação de que a rota existe e qual é a regra.
+    sabe que precisa de admin porque é o dono da tela; quem estiver sondando
+    a API não ganha de graça a confirmação de que a rota existe e qual é a regra.
     """
 
     def has_permission(self, request, view) -> bool:
         if request.method in permissions.SAFE_METHODS:
             return True
         return IsAdmin().has_permission(request, view)
+
+
+class DonoOuAdmin(permissions.BasePermission):
+    """Usuário autenticado; o dono do pedido ou um admin enxerga o registro.
+
+    A filtragem por dono acontece no `get_queryset` (quem não é dono nem admin
+    recebe 404, sem confirmar que o id existe); esta permissão é a segunda
+    trava, por objeto, caso o queryset algum dia seja alargado.
+    """
+
+    def has_permission(self, request, view) -> bool:
+        return bool(request.user and request.user.is_authenticated)
+
+    def has_object_permission(self, request, view, obj) -> bool:
+        user = request.user
+        if getattr(user, "role", None) == Role.ADMIN:
+            return True
+        return getattr(obj, "usuario_id", None) == getattr(user, "id", None)

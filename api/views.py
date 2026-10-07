@@ -1,7 +1,8 @@
+from django.db import transaction
 from django.http import JsonResponse
 from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework import filters, viewsets
-from rest_framework.exceptions import NotFound
+from rest_framework import filters, mixins, viewsets
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.generics import GenericAPIView
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -9,18 +10,23 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.settings import api_settings as jwt_settings
 
 from api.pagination import CatalogoPagination
-from api.permissions import ReadOnlyOrIsAdmin
+from api.permissions import DonoOuAdmin, ReadOnlyOrIsAdmin
 from api.serializers import (
     CategorySerializer,
     ItemSerializer,
     LoginSerializer,
+    PedidoCreateSerializer,
+    PedidoSerializer,
     UserSerializer,
 )
 from api.throttling import LoginRateThrottle
-from repositories.models import Category, Item
+from repositories.models import Category, Item, Pedido, Role
 from services import cache as cache_service
 from services import events
 from services.auth_service import AuthService, InactiveUser, InvalidCredentials
+from services.mensageria import produtor
+from services.mensageria.envelope import montar_pedido_criado
+from services.pedido_service import PedidoInvalido, PedidoService
 
 #: header que diz de onde veio a resposta do catálogo
 HEADER_CACHE = "X-Cache"
@@ -271,3 +277,81 @@ class ItemViewSet(viewsets.ModelViewSet):
         item_id = instance.id
         instance.delete()
         events.publicar(events.ITEM_REMOVIDO, item_id=item_id)
+
+
+class PedidoViewSet(mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+    """Criação e consulta de pedidos - o produtor da Aula 9.
+
+    `POST /api/v1/pedidos/` grava o pedido e publica `PedidoCriado` **depois
+    do commit**; `GET /api/v1/pedidos/{id}/` é a observabilidade: é por ela
+    que se vê `status` virar `confirmado` e `processado_em` ganhar valor
+    quando o worker termina o consumo.
+
+    Respostas do POST:
+
+    * **201** - pedido criado e evento confirmado pelo broker
+      (`evento_publicado: true`);
+    * **202** - pedido criado, mas o broker **recusou** a publicação
+      (`evento_publicado: false`): o dado está no banco e a reposição do
+      evento é decisão operacional (sem outbox nesta etapa);
+    * **200** - a `idempotency_key` já tinha pedido; nada novo é criado nem
+      publicado.
+
+    Sem `throttle_scope`: o teto aplicável é o `user` global (300/min por
+    usuário), que é o correto para uma rota de cliente - o `admin_write`
+    continua reservado às escritas de catálogo.
+    """
+
+    queryset = Pedido.objects.select_related("usuario").prefetch_related("itens")
+    serializer_class = PedidoSerializer
+    permission_classes = [DonoOuAdmin]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        user = self.request.user
+        if getattr(user, "role", None) == Role.ADMIN:
+            return queryset
+        # quem não é dono nem admin nem vê o id (404, sem booleano de existência)
+        return queryset.filter(usuario=user)
+
+    def create(self, request, *args, **kwargs):
+        entrada = PedidoCreateSerializer(data=request.data)
+        entrada.is_valid(raise_exception=True)
+
+        resultado = {"publicado": False}
+        try:
+            with transaction.atomic():
+                pedido, criado = PedidoService().criar(
+                    usuario=request.user,
+                    idempotency_key=entrada.validated_data["idempotency_key"],
+                    itens=entrada.validated_data["itens"],
+                )
+                if criado:
+                    envelope = montar_pedido_criado(pedido)
+                    # o callback roda somente depois do COMMIT: um rollback
+                    # nunca deixa na fila um evento de pedido inexistente
+                    transaction.on_commit(
+                        lambda: resultado.__setitem__(
+                            "publicado",
+                            produtor.publicar_pedido_criado(envelope),
+                        )
+                    )
+        except PedidoInvalido as erro:
+            raise ValidationError(erro.erros)
+
+        corpo = {
+            "pedido": PedidoSerializer(pedido).data,
+            "evento_publicado": resultado["publicado"],
+        }
+        if not criado:
+            corpo["detalhe"] = (
+                "pedido já existente para esta idempotency_key; "
+                "nada foi recriado nem republicado"
+            )
+            return Response(corpo, status=200)
+        if not resultado["publicado"]:
+            corpo["detalhe"] = (
+                "pedido persistido, mas o broker recusou a publicação do evento"
+            )
+            return Response(corpo, status=202)
+        return Response(corpo, status=201)
