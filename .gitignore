@@ -18,6 +18,8 @@ ENV/
 .env
 .env.*
 *.env
+# o exemplo versionado é justamente o que deve ser versionado
+!.env.example
 
 # Testes / cobertura
 .pytest_cache/
