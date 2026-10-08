@@ -38,12 +38,32 @@ services:
       RABBITMQ_USER: ${RABBITMQ_USER:-synapseshop}
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-synapseshop}
       PEDIDO_IDEMPOTENCIA_TTL_S: ${PEDIDO_IDEMPOTENCIA_TTL_S:-3600}
+      # Aula 10 - seleção de broker e Kafka (padrão). `MENSAGERIA_BROKER=kafka`
+      # usa o Apache Kafka; `=rabbitmq` reativa o fluxo da Aula 9, preservado.
+      MENSAGERIA_BROKER: ${MENSAGERIA_BROKER:-kafka}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_GROUP_ID: ${KAFKA_GROUP_ID:-synapseshop-worker}
+      KAFKA_TOPIC_PEDIDO_CRIADO: ${KAFKA_TOPIC_PEDIDO_CRIADO:-pedidos.pedidocriado}
+      KAFKA_TOPIC_DLQ: ${KAFKA_TOPIC_DLQ:-pedidos.pedidocriado.dlq}
+      # Topologia (aplicada na criacao dos topicos) e produtor da API: sem
+      # estas entradas o .env seria silenciosamente ignorado no container.
+      KAFKA_TOPIC_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS:-3}
+      KAFKA_DLQ_PARTITIONS: ${KAFKA_DLQ_PARTITIONS:-1}
+      KAFKA_RETENTION_MS_MAIN: ${KAFKA_RETENTION_MS_MAIN:-604800000}
+      KAFKA_RETENTION_MS_DLQ: ${KAFKA_RETENTION_MS_DLQ:-2419200000}
+      KAFKA_ENABLE_AUTO_COMMIT: ${KAFKA_ENABLE_AUTO_COMMIT:-false}
+      KAFKA_AUTO_OFFSET_RESET: ${KAFKA_AUTO_OFFSET_RESET:-earliest}
+      KAFKA_ACKS: ${KAFKA_ACKS:-all}
+      KAFKA_RETRIES: ${KAFKA_RETRIES:-3}
+      KAFKA_LINGER_MS: ${KAFKA_LINGER_MS:-10}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
       rabbitmq:
+        condition: service_healthy
+      kafka:
         condition: service_healthy
     restart: unless-stopped
 
@@ -63,6 +83,47 @@ services:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  # Aula 10 - broker padrão: Apache Kafka em KRaft (um nó broker+controller,
+  # sem ZooKeeper). O listener PLAINTEXT (9092) é interno à rede do Compose;
+  # o PLAINTEXT_HOST (29092) fica para ferramentas do host (Kafka UI, etc.).
+  # Os tópicos são criação explícita da aplicação (`topologia_kafka.py`), por
+  # isso auto-create está desligado: a topologia (partições/retenção) é
+  # declarada, nunca implícita.
+  kafka:
+    image: apache/kafka:3.9.1
+    container_name: synapseshop-kafka
+    ports:
+      - "29092:29092"
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093,PLAINTEXT_HOST://:29092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_LOG_DIRS: "/var/lib/kafka/data"
+      CLUSTER_ID: "synapseshop-kraft-cluster"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list > /dev/null 2>&1",
+        ]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -97,12 +158,33 @@ services:
       # vírgula). VAZIO por padrão: a falha forçada nunca fica ligada.
       PEDIDO_WORKER_FALHA_IDEM_KEYS: ${PEDIDO_WORKER_FALHA_IDEM_KEYS:-}
       PEDIDO_WORKER_ESPERA_RECONEXAO_S: ${PEDIDO_WORKER_ESPERA_RECONEXAO_S:-5}
+      # Aula 10 - mesmo broker da API (padrão kafka; rabbitmq para reativar a
+      # Aula 9). O group.id é o que reparte as partições entre workers: várias
+      # réplicas deste serviço escalam o consumo do tópico.
+      MENSAGERIA_BROKER: ${MENSAGERIA_BROKER:-kafka}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_GROUP_ID: ${KAFKA_GROUP_ID:-synapseshop-worker}
+      KAFKA_TOPIC_PEDIDO_CRIADO: ${KAFKA_TOPIC_PEDIDO_CRIADO:-pedidos.pedidocriado}
+      KAFKA_TOPIC_DLQ: ${KAFKA_TOPIC_DLQ:-pedidos.pedidocriado.dlq}
+      # Consumer (commit/offset) e produtor de reentrega/DLQ do worker: sem
+      # estas entradas o .env seria silenciosamente ignorado no container.
+      KAFKA_TOPIC_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS:-3}
+      KAFKA_DLQ_PARTITIONS: ${KAFKA_DLQ_PARTITIONS:-1}
+      KAFKA_RETENTION_MS_MAIN: ${KAFKA_RETENTION_MS_MAIN:-604800000}
+      KAFKA_RETENTION_MS_DLQ: ${KAFKA_RETENTION_MS_DLQ:-2419200000}
+      KAFKA_ENABLE_AUTO_COMMIT: ${KAFKA_ENABLE_AUTO_COMMIT:-false}
+      KAFKA_AUTO_OFFSET_RESET: ${KAFKA_AUTO_OFFSET_RESET:-earliest}
+      KAFKA_ACKS: ${KAFKA_ACKS:-all}
+      KAFKA_RETRIES: ${KAFKA_RETRIES:-3}
+      KAFKA_LINGER_MS: ${KAFKA_LINGER_MS:-10}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
       rabbitmq:
+        condition: service_healthy
+      kafka:
         condition: service_healthy
     restart: unless-stopped
 
@@ -163,3 +245,4 @@ services:
 volumes:
   redis_data:
   rabbitmq_data:
+  kafka_data:

@@ -94,3 +94,27 @@ ESPERA_RECONEXAO_S = float(os.environ.get("PEDIDO_WORKER_ESPERA_RECONEXAO_S", "5
 ESPERA_RECONEXAO_MAX_S = float(
     os.environ.get("PEDIDO_WORKER_ESPERA_RECONEXAO_MAX_S", "60")
 )
+
+# --- broker selection ------------------------------------------------------
+MENSAGERIA_BROKER = os.environ.get('MENSAGERIA_BROKER', 'kafka').strip().lower()
+
+# --- kafka -----------------------------------------------------------------
+KAFKA_BOOTSTRAP_SERVERS = os.environ.get('KAFKA_BOOTSTRAP_SERVERS', 'kafka:9092')
+KAFKA_CLIENT_ID = os.environ.get('KAFKA_CLIENT_ID', 'synapseshop-api')
+KAFKA_GROUP_ID = os.environ.get('KAFKA_GROUP_ID', 'synapseshop-worker')
+KAFKA_SECURITY_PROTOCOL = os.environ.get('KAFKA_SECURITY_PROTOCOL', 'PLAINTEXT')
+KAFKA_AUTO_OFFSET_RESET = os.environ.get('KAFKA_AUTO_OFFSET_RESET', 'earliest')
+
+# kafka topics / retention (Aula 10)
+KAFKA_TOPIC_PEDIDO_CRIADO = os.environ.get('KAFKA_TOPIC_PEDIDO_CRIADO', 'pedidos.pedidocriado')
+KAFKA_TOPIC_DLQ = os.environ.get('KAFKA_TOPIC_DLQ', 'pedidos.pedidocriado.dlq')
+KAFKA_TOPIC_PARTITIONS = int(os.environ.get('KAFKA_TOPIC_PARTITIONS', '3'))
+KAFKA_DLQ_PARTITIONS = int(os.environ.get('KAFKA_DLQ_PARTITIONS', '1'))
+KAFKA_RETENTION_MS_MAIN = int(os.environ.get('KAFKA_RETENTION_MS_MAIN', str(7*24*3600*1000)))  # 7 dias
+KAFKA_RETENTION_MS_DLQ = int(os.environ.get('KAFKA_RETENTION_MS_DLQ', str(28*24*3600*1000)))  # 28 dias
+
+# kafka producer/consumer
+KAFKA_ENABLE_AUTO_COMMIT = os.environ.get('KAFKA_ENABLE_AUTO_COMMIT', 'false').lower() == 'true'
+KAFKA_ACKS = os.environ.get('KAFKA_ACKS', 'all')
+KAFKA_RETRIES = int(os.environ.get('KAFKA_RETRIES', '3'))
+KAFKA_LINGER_MS = int(os.environ.get('KAFKA_LINGER_MS', '10'))
