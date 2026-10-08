@@ -2,7 +2,15 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
-from repositories.models import Category, Item, Pedido, PedidoItem, User
+from repositories.models import (
+    Category,
+    Item,
+    Pagamento,
+    Pedido,
+    PedidoItem,
+    StatusPagamento,
+    User,
+)
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -135,4 +143,27 @@ class PedidoSerializer(serializers.ModelSerializer):
             "created_at",
             "itens",
         ]
+        read_only_fields = fields
+
+
+class PagamentoCreateSerializer(serializers.Serializer):
+    """Corpo do `POST /api/v1/pedidos/{id}/pagamento/`.
+
+    `status` é o desfecho decidido pelo cliente (simulação determinística, sem
+    regra por valor); ausente no corpo, vale `APROVADO`. Valor fora de
+    `APROVADO`/`RECUSADO` é recusado com 400 pelo `ChoiceField`.
+    """
+
+    status = serializers.ChoiceField(
+        choices=StatusPagamento.choices,
+        default=StatusPagamento.APROVADO,
+    )
+
+
+class PagamentoSerializer(serializers.ModelSerializer):
+    """Leitura do pagamento; `pedido` sai como id (já endereçável na URL)."""
+
+    class Meta:
+        model = Pagamento
+        fields = ["id", "pedido", "status", "created_at"]
         read_only_fields = fields

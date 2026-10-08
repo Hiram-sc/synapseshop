@@ -15,6 +15,8 @@ from api.serializers import (
     CategorySerializer,
     ItemSerializer,
     LoginSerializer,
+    PagamentoCreateSerializer,
+    PagamentoSerializer,
     PedidoCreateSerializer,
     PedidoSerializer,
     UserSerializer,
@@ -25,7 +27,11 @@ from services import cache as cache_service
 from services import events
 from services.auth_service import AuthService, InactiveUser, InvalidCredentials
 from services.mensageria import facade
-from services.mensageria.envelope import montar_pedido_criado
+from services.mensageria.envelope import (
+    montar_pagamento_processado,
+    montar_pedido_criado,
+)
+from services.pagamento_service import PagamentoJaProcessado, PagamentoService
 from services.pedido_service import PedidoInvalido, PedidoService
 
 #: header que diz de onde veio a resposta do catálogo
@@ -352,6 +358,94 @@ class PedidoViewSet(mixins.RetrieveModelMixin, viewsets.GenericViewSet):
         if not resultado["publicado"]:
             corpo["detalhe"] = (
                 "pedido persistido, mas o broker recusou a publicação do evento"
+            )
+            return Response(corpo, status=202)
+        return Response(corpo, status=201)
+
+
+class PagamentoView(APIView):
+    """`POST /api/v1/pedidos/{id}/pagamento/` - pagamento simulado (Aula 11).
+
+    Corpo: `{"status": "APROVADO" | "RECUSADO"}` (ausente, `APROVADO`).
+    O desfecho é decisão do cliente - simulação determinística, sem regra por
+    valor do pedido - e viaja num único evento `PagamentoProcessado` publicado
+    **depois do commit**, com `idempotency_key = pagamento:{pedido_id}`.
+
+    Respostas:
+
+    * **201** - pagamento persistido e evento confirmado pelo broker
+      (`evento_publicado: true`);
+    * **202** - pagamento persistido, mas o broker **recusou** a publicação
+      (`evento_publicado: false`): o dado está no banco e a reposição do
+      evento é decisão operacional (mesmo contrato do POST do pedido);
+    * **409** - o pedido **já tinha pagamento**: nada é recriado nem
+      republicado, e a resposta traz o pagamento existente;
+    * **404** - pedido inexistente ou de outro usuário, com a mesma régua do
+      `GET /api/v1/pedidos/{id}/` (sem booleano de existência).
+
+    `RECUSADO` grava `status=cancelado` no pedido na mesma transação do
+    pagamento; `APROVADO` deixa o pedido no fluxo normal (o pedido-worker
+    confirma, e a notificação é consumida adiante pelo notificacao-worker).
+    Sem `throttle_scope`, idem o POST do pedido: vale o teto global `user`.
+    """
+
+    permission_classes = [DonoOuAdmin]
+
+    def _get_pedido(self, pedido_id: int, user) -> Pedido:
+        """Resolve o pedido com a régua de visibilidade do endpoint de pedidos."""
+        pedidos = Pedido.objects.select_related("usuario")
+        if getattr(user, "role", None) != Role.ADMIN:
+            # quem não é dono nem admin nem vê o id (404, sem booleano)
+            pedidos = pedidos.filter(usuario=user)
+        pedido = pedidos.filter(pk=pedido_id).first()
+        if pedido is None:
+            raise NotFound()
+        # segunda trava, por objeto (a mesma que o `get_object` do DRF rodaria)
+        self.check_object_permissions(self.request, pedido)
+        return pedido
+
+    def post(self, request, pedido_id):
+        entrada = PagamentoCreateSerializer(data=request.data)
+        entrada.is_valid(raise_exception=True)
+
+        pedido = self._get_pedido(pedido_id, request.user)
+
+        try:
+            pagamento = PagamentoService().processar(
+                pedido, entrada.validated_data["status"]
+            )
+        except PagamentoJaProcessado as erro:
+            return Response(
+                {
+                    "detail": (
+                        "pagamento já processado para este pedido; "
+                        "nada foi recriado nem republicado"
+                    ),
+                    "pagamento": PagamentoSerializer(erro.pagamento).data,
+                    "pedido": PedidoSerializer(pedido).data,
+                },
+                status=409,
+            )
+
+        resultado = {"publicado": False}
+        envelope = montar_pagamento_processado(pagamento, pedido)
+        # o callback roda somente depois do COMMIT (ou imediatamente, se não
+        # houver transação aberta): o pagamento já está no banco quando o
+        # broker é chamado, e um rollback nunca deixa evento órfão
+        transaction.on_commit(
+            lambda: resultado.__setitem__(
+                "publicado", facade.publicar_evento(envelope)
+            )
+        )
+
+        corpo = {
+            "pagamento": PagamentoSerializer(pagamento).data,
+            "pedido": PedidoSerializer(pedido).data,
+            "evento_publicado": resultado["publicado"],
+        }
+        if not resultado["publicado"]:
+            corpo["detalhe"] = (
+                "pagamento persistido, mas o broker recusou a publicação do evento"
             )
             return Response(corpo, status=202)
         return Response(corpo, status=201)
