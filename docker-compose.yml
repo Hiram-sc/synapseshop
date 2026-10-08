@@ -30,6 +30,8 @@ services:
       CACHE_ENABLED: ${CACHE_ENABLED:-true}
       CACHE_TTL_LISTA: ${CACHE_TTL_LISTA:-60}
       CACHE_TTL_DETALHE: ${CACHE_TTL_DETALHE:-300}
+      # Aula 11 - TTL do cache-aside do pedido (GET /pedidos/{id}/)
+      CACHE_TTL_PEDIDO: ${CACHE_TTL_PEDIDO:-60}
       # Aula 9 - broker da mensageria. A API é o produtor (publica depois do
       # commit); o worker consome. As credenciais abaixo são as de
       # desenvolvimento, as mesmas do serviço rabbitmq.
@@ -56,6 +58,11 @@ services:
       KAFKA_ACKS: ${KAFKA_ACKS:-all}
       KAFKA_RETRIES: ${KAFKA_RETRIES:-3}
       KAFKA_LINGER_MS: ${KAFKA_LINGER_MS:-10}
+      # Aula 11 - tópicos do fluxo Pedido -> Pagamento -> Notificação.
+      KAFKA_TOPIC_PAGAMENTO_PROCESSADO: ${KAFKA_TOPIC_PAGAMENTO_PROCESSADO:-pedidos.pagamentoprocessado}
+      KAFKA_TOPIC_PAGAMENTO_DLQ: ${KAFKA_TOPIC_PAGAMENTO_DLQ:-pedidos.pagamentoprocessado.dlq}
+      KAFKA_TOPIC_NOTIFICACAO_ENVIADA: ${KAFKA_TOPIC_NOTIFICACAO_ENVIADA:-pedidos.notificacaoenviada}
+      KAFKA_TOPIC_NOTIFICACAO_DLQ: ${KAFKA_TOPIC_NOTIFICACAO_DLQ:-pedidos.notificacaoenviada.dlq}
     depends_on:
       postgres:
         condition: service_healthy
@@ -177,12 +184,73 @@ services:
       KAFKA_ACKS: ${KAFKA_ACKS:-all}
       KAFKA_RETRIES: ${KAFKA_RETRIES:-3}
       KAFKA_LINGER_MS: ${KAFKA_LINGER_MS:-10}
+      # Aula 11 - o worker também cria a topologia dos eventos da Aula 11
+      # (mesmos nomes da API); o consumo deles é do notificacao-worker.
+      KAFKA_TOPIC_PAGAMENTO_PROCESSADO: ${KAFKA_TOPIC_PAGAMENTO_PROCESSADO:-pedidos.pagamentoprocessado}
+      KAFKA_TOPIC_PAGAMENTO_DLQ: ${KAFKA_TOPIC_PAGAMENTO_DLQ:-pedidos.pagamentoprocessado.dlq}
+      KAFKA_TOPIC_NOTIFICACAO_ENVIADA: ${KAFKA_TOPIC_NOTIFICACAO_ENVIADA:-pedidos.notificacaoenviada}
+      KAFKA_TOPIC_NOTIFICACAO_DLQ: ${KAFKA_TOPIC_NOTIFICACAO_DLQ:-pedidos.notificacaoenviada.dlq}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
       rabbitmq:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Aula 11 - consumidor do PagamentoProcessado: registra a notificação e
+  # publica o evento terminal NotificacaoEnviada, fechando o fluxo
+  # Pedido -> Pagamento -> Notificação. Mesma imagem da API, outro command;
+  # group próprio, para o histórico de offset não misturar com o do
+  # pedido-worker. Só existe no Kafka (padrão): com MENSAGERIA_BROKER=rabbitmq
+  # o comando recusa iniciar, pois os eventos da Aula 11 não têm rota lá.
+  notificacao-worker:
+    build: .
+    image: synapseshop:dev
+    container_name: synapseshop-notificacao-worker
+    command: python manage.py notificacao_worker
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: synapseshop
+      POSTGRES_USER: synapseshop
+      POSTGRES_PASSWORD: synapseshop
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_DB: ${REDIS_DB:-0}
+      PEDIDO_IDEMPOTENCIA_TTL_S: ${PEDIDO_IDEMPOTENCIA_TTL_S:-3600}
+      PEDIDO_WORKER_MAX_TENTATIVAS: ${PEDIDO_WORKER_MAX_TENTATIVAS:-4}
+      PEDIDO_WORKER_BACKOFF_BASE_S: ${PEDIDO_WORKER_BACKOFF_BASE_S:-0.25}
+      # Mesma falha proposital do pedido-worker (fnmatch) para observar
+      # retry -> DLQ também no consumo de pagamento. VAZIO por padrão.
+      PEDIDO_WORKER_FALHA_IDEM_KEYS: ${PEDIDO_WORKER_FALHA_IDEM_KEYS:-}
+      # Aula 11 - consumo do PagamentoProcessado: tópicos do fluxo e group
+      # próprio (KAFKA_GROUP_ID_NOTIFICACAO) no lugar do group do pedido.
+      MENSAGERIA_BROKER: ${MENSAGERIA_BROKER:-kafka}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_GROUP_ID_NOTIFICACAO: ${KAFKA_GROUP_ID_NOTIFICACAO:-synapseshop-notificacao-worker}
+      KAFKA_TOPIC_PAGAMENTO_PROCESSADO: ${KAFKA_TOPIC_PAGAMENTO_PROCESSADO:-pedidos.pagamentoprocessado}
+      KAFKA_TOPIC_PAGAMENTO_DLQ: ${KAFKA_TOPIC_PAGAMENTO_DLQ:-pedidos.pagamentoprocessado.dlq}
+      KAFKA_TOPIC_NOTIFICACAO_ENVIADA: ${KAFKA_TOPIC_NOTIFICACAO_ENVIADA:-pedidos.notificacaoenviada}
+      KAFKA_TOPIC_NOTIFICACAO_DLQ: ${KAFKA_TOPIC_NOTIFICACAO_DLQ:-pedidos.notificacaoenviada.dlq}
+      # Consumer (commit/offset) e produtor (NotificacaoEnviada): sem estas
+      # entradas o .env seria silenciosamente ignorado no container.
+      KAFKA_TOPIC_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS:-3}
+      KAFKA_DLQ_PARTITIONS: ${KAFKA_DLQ_PARTITIONS:-1}
+      KAFKA_RETENTION_MS_MAIN: ${KAFKA_RETENTION_MS_MAIN:-604800000}
+      KAFKA_RETENTION_MS_DLQ: ${KAFKA_RETENTION_MS_DLQ:-2419200000}
+      KAFKA_ENABLE_AUTO_COMMIT: ${KAFKA_ENABLE_AUTO_COMMIT:-false}
+      KAFKA_AUTO_OFFSET_RESET: ${KAFKA_AUTO_OFFSET_RESET:-earliest}
+      KAFKA_ACKS: ${KAFKA_ACKS:-all}
+      KAFKA_RETRIES: ${KAFKA_RETRIES:-3}
+      KAFKA_LINGER_MS: ${KAFKA_LINGER_MS:-10}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       kafka:
         condition: service_healthy
