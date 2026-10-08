@@ -89,16 +89,18 @@ class Item(models.Model):
 
 
 class StatusPedido(models.TextChoices):
-    """Estados de um pedido na Aula 9.
+    """Estados de um pedido.
 
-    São dois, e a transição é feita por processos diferentes: a API grava
-    `CRIADO` na criação e o worker passa para `CONFIRMADO` quando termina de
-    processar o evento `PedidoCriado`. Estados de pagamento ou notificação
-    pertencem a etapas futuras e não existem aqui.
+    A transição é feita por processos diferentes: a API grava `CRIADO` na
+    criação, o worker passa para `CONFIRMADO` quando termina de processar o
+    evento `PedidoCriado`, e a API grava `CANCELADO` quando o pagamento é
+    recusado (Aula 11). Não existe estado `pago`: pagamento aprovado deixa o
+    pedido no fluxo normal, que segue para a notificação.
     """
 
     CRIADO = "criado", "Criado"
     CONFIRMADO = "confirmado", "Confirmado"
+    CANCELADO = "cancelado", "Cancelado"
 
 
 class Pedido(models.Model):
@@ -174,6 +176,88 @@ class PedidoItem(models.Model):
 
     def __str__(self):
         return f"{self.quantidade}x {self.nome_item}"
+
+
+class StatusPagamento(models.TextChoices):
+    """Desfecho de um pagamento simulado (Aula 11).
+
+    Os valores são exatamente os aceitos no corpo da requisição e os que
+    viajam dentro do evento `PagamentoProcessado` (`dados.status`): um único
+    evento, com o resultado no conteúdo - nunca eventos separados por
+    desfecho.
+    """
+
+    APROVADO = "APROVADO", "Aprovado"
+    RECUSADO = "RECUSADO", "Recusado"
+
+
+class Pagamento(models.Model):
+    """Pagamento simulado de um pedido - no máximo um por pedido.
+
+    A unicidade é garantida pelo banco (`OneToOneField`): uma segunda
+    tentativa para o mesmo pedido esbarra na `IntegrityError`, é tratada
+    como recurso já processado (409) e nada é publicado de novo. O
+    desfecho (`APROVADO`/`RECUSADO`) é decidido pelo cliente, de forma
+    determinística - não há regra por valor do pedido.
+
+    `RECUSADO` marca o pedido como `CANCELADO` na mesma transação; o
+    evento `PagamentoProcessado` sai depois do commit, para o worker de
+    notificação.
+    """
+
+    pedido = models.OneToOneField(
+        Pedido,
+        on_delete=models.CASCADE,
+        related_name="pagamento",
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=StatusPagamento.choices,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Pagamento #{self.pk} do pedido {self.pedido_id} ({self.status})"
+
+
+class Notificacao(models.Model):
+    """Notificação gerada para um pagamento aprovado.
+
+    Criada exclusivamente pelo `notificacao-worker` ao consumir
+    `PagamentoProcessado` com `dados.status = APROVADO`; pagamento recusado
+    não gera notificação. O `OneToOne` com `Pagamento` fecha a porta para
+    duplicata mesmo se o evento for reentregue, e a idempotência do consumo
+    é a primeira camada (a reentrega vira registro repetido, sem novo efeito).
+
+    O vínculo com `pedido` é redundante com `pagamento.pedido`, mas
+    existencial: a consulta "notificações deste pedido" não precisa subir a
+    cadeia, e o pedido continua existindo mesmo se um dia o pagamento for
+    apagado em limpeza (`SET_NULL`).
+    """
+
+    pedido = models.ForeignKey(
+        Pedido,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="notificacoes",
+    )
+    pagamento = models.OneToOneField(
+        Pagamento,
+        on_delete=models.CASCADE,
+        related_name="notificacao",
+    )
+    mensagem = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Notificação #{self.pk} (pagamento {self.pagamento_id})"
 
 
 class EventoProcessado(models.Model):
