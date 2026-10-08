@@ -72,6 +72,20 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+    # Aula 11 - readiness via `/health/pronto` (200 só com PostgreSQL, Redis e
+    # broker respondendo). A imagem não tem `curl`; o próprio python faz o GET.
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health/pronto', timeout=10).status == 200 else 1)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
 
   # Aula 9 - broker RabbitMQ. Management na 15672 para inspeção de filas e
