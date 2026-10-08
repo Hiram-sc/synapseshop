@@ -6,7 +6,9 @@ Regras concentradas aqui:
   segunda tentativa levanta `PagamentoJaProcessado` (a view responde 409) e
   nada é criado nem republicado;
 * **`RECUSADO` cancela o pedido na mesma transação** - ou o pagamento e o
-  cancelamento existem, ou nenhum dos dois;
+  cancelamento existem, ou nenhum dos dois. Cancelar é uma mudança de estado
+  do pedido, então o cache do `GET /pedidos/{id}/` (Aula 11) é invalidado no
+  retorno, dentro da mesma transação;
 * **`APROVADO` não muda o status do pedido**: o fluxo normal continua (o
   pedido-worker confirma), e a notificação é o próximo passo do evento.
 
@@ -19,6 +21,7 @@ from __future__ import annotations
 from django.db import IntegrityError, transaction
 
 from repositories.models import Pagamento, Pedido, StatusPagamento, StatusPedido
+from services import cache as cache_service
 
 
 class PagamentoJaProcessado(Exception):
@@ -54,6 +57,10 @@ class PagamentoService:
                     # falhar, e vice-versa
                     pedido.status = StatusPedido.CANCELADO
                     pedido.save(update_fields=["status"])
+                    # o status do pedido mudou: derruba o cache do `GET /pedidos/
+                    # {id}/` (Aula 11). Dentro da transação do pagamento, de
+                    # propósito: se der rollback, nada foi invalidado à toa.
+                    cache_service.invalidar_pedido(pedido.pk)
         except IntegrityError:
             existente = Pagamento.objects.filter(pedido=pedido).first()
             if existente is not None:

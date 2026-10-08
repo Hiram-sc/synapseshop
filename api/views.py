@@ -320,6 +320,40 @@ class PedidoViewSet(mixins.RetrieveModelMixin, viewsets.GenericViewSet):
         # quem não é dono nem admin nem vê o id (404, sem booleano de existência)
         return queryset.filter(usuario=user)
 
+    def retrieve(self, request, *args, **kwargs):
+        """`GET` do pedido com cache-aside (Aula 11).
+
+        No `MISS`, `calcular` consulta o banco já **escopado** no dono/admin
+        (o `get_queryset` filtra), então quem não pode ver recebe o mesmo 404
+        de sempre e nada é gravado. No `HIT`, a consulta escopada não acontece:
+        a validação de dono/admin é refeita a partir do payload cacheado
+        (o `usuario` nele + o papel do requester), porque o registro em cache
+        pode ter sido gravado por outro usuário que o preencheu antes.
+        """
+        pedido_id = kwargs[self.lookup_field]
+
+        def calcular():
+            pedido = self.get_queryset().filter(pk=pedido_id).first()
+            return None if pedido is None else self.get_serializer(pedido).data
+
+        payload, estado = cache_service.obter_pedido(pedido_id, calcular)
+        if payload is None:
+            # mesmo status e mesma mensagem do `get_object` do DRF
+            raise NotFound()
+        if estado == cache_service.HIT and not self._pode_ver(request.user, payload):
+            # HIT gravado por outro usuário: mesma régua do MISS (404)
+            raise NotFound()
+
+        resposta = Response(payload)
+        resposta[HEADER_CACHE] = estado
+        return resposta
+
+    def _pode_ver(self, user, payload) -> bool:
+        """Régua do `DonoOuAdmin`, a partir do payload cacheado no HIT."""
+        if getattr(user, "role", None) == Role.ADMIN:
+            return True
+        return payload.get("usuario") == getattr(user, "username", None)
+
     def create(self, request, *args, **kwargs):
         entrada = PedidoCreateSerializer(data=request.data)
         entrada.is_valid(raise_exception=True)

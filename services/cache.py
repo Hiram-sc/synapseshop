@@ -1,11 +1,12 @@
-"""Cache-aside do catálogo com Redis.
+"""Cache-aside do catálogo e dos pedidos com Redis.
 
 Este módulo é a única porta de entrada para o cache da aplicação: nenhuma view
 fala com o `django.core.cache` diretamente. Isso permite responder a três
 perguntas que a aula pede, e que só têm resposta se o acesso estiver centralizado:
 
-1. **Qual chave guarda o quê?** Nomes versionados (`catalogo:v1:...`) e um
-   `digest` dos parâmetros no lugar de uma lista de chaves por combinação.
+1. **Qual chave guarda o quê?** Nomes versionados (`catalogo:v1:...`,
+   `pedidos:v1:...`) e um `digest` dos parâmetros no lugar de uma lista de
+   chaves por combinação.
 2. **O que acontece quando o Redis cai?** Nada: o cache é acessório. A camada
    engole a falha (fail-open), marca a métrica de erro e devolve
    `X-Cache: BYPASS`, com os dados vindos do PostgreSQL.
@@ -16,17 +17,20 @@ perguntas que a aula pede, e que só têm resposta se o acesso estiver centraliz
 Três decisões de projeto explicam o desenho:
 
 * **Cache-aside, não write-through.** Quem escreve não atualiza o cache; quem
-  lê preenche (`obter_listagem`/`obter_detalhe`). Assim existe um único caminho
-  de escrita no banco e nenhum risco de o cache "esquecer" uma alteração.
+  lê preenche (`obter_listagem`/`obter_detalhe`/`obter_pedido`). Assim existe
+  um único caminho de escrita no banco e nenhum risco de o cache "esquecer"
+  uma alteração.
 * **Invalidação da listagem por geração.** A listagem combina paginação,
   busca, ordenação, filtro de ativo e filtro de categoria: são tantas variantes
-  que apagar uma a uma exigiria varrer o Redis com `KEYS`/`SCAN` a cada
+  que apagar todas de uma vez (KEYS/SCAN) exigiria varrer o Redis a cada
   escrita. Em vez disso, todas as chaves da listagem carregam um número de
   geração (`g0`, `g1`, ...) e uma invalidação é um único `INCR`. As chaves da
   geração antiga ficam órfãs e morrem sozinhas pelo TTL.
 * **Nada de cache de 404.** Um item inexistente não é gravado: o `404` continua
   dependendo do banco, e o TTL segue sendo apenas a rede de proteção para o caso
-  de alguma invalidação se perder.
+  de alguma invalidação se perder. O pedido segue a mesma regra - e quem decide
+  o 404 do pedido é o dono: o HIT só é servido a admin ou ao próprio dono
+  (a checagem é na view, a partir do payload cacheado).
 """
 
 from __future__ import annotations
@@ -59,6 +63,12 @@ DETALHE = "catalogo:v1:item:detalhe"
 CHAVE_GERACAO_LISTA = "catalogo:v1:itens:lista:geracao"
 #: tudo que a aula 8 escreve no Redis (listagem, detalhe e a geração)
 NAMESPACE = "catalogo:v1:*"
+
+# Chave do pedido (Aula 11). Namespace próprio porque o pedido não é catálogo:
+# o payload é outro, o TTL é outro e a invalidação é por chave, sempre que um
+# processo (API ou worker) altera o status do pedido.
+PEDIDO = "pedidos:v1:pedido"
+NAMESPACE_PEDIDO = "pedidos:v1:*"
 
 # ordenação usada quando o cliente não manda `?ordering=`; precisa acompanhar o
 # `Meta.ordering` de `repositories.models.Item`, porque é dela que o DRF tira o
@@ -149,6 +159,11 @@ def chave_detalhe(item_id: Any) -> str:
     return f"{DETALHE}:{int(item_id)}"
 
 
+def chave_pedido(pedido_id: Any) -> str:
+    """Chave do pedido: `pedidos:v1:pedido:{id}` - endereçada pelo id."""
+    return f"{PEDIDO}:{int(pedido_id)}"
+
+
 def chave_listagem(digest: str, geracao: Optional[int] = None) -> str:
     """Chave da listagem; sem `geracao`, usa a geração corrente do Redis."""
     if geracao is None:
@@ -230,7 +245,7 @@ class MetricasCache:
 
 
 def metricas() -> Dict[str, MetricasCache]:
-    """Cópia das métricas por endpoint (`lista`, `detalhe`)."""
+    """Cópia das métricas por endpoint (`lista`, `detalhe`, `pedido`)."""
     with _lock:
         return {nome: MetricasCache(**vars(m)) for nome, m in _metricas.items()}
 
@@ -380,6 +395,60 @@ def obter_detalhe(
     return payload, estado
 
 
+def obter_pedido(
+    pedido_id: Any, calcular: Callable[[], Optional[Dict[str, Any]]]
+) -> Tuple[Optional[Dict[str, Any]], str]:
+    """Cache-aside do pedido (`GET /api/v1/pedidos/{id}/`).
+
+    Mesmo molde do `obter_detalhe`: `calcular` devolve `None` quando o pedido
+    não existe **ou** o usuário não pode vê-lo (query escopada no dono/admin) -
+    nesses casos nada é gravado e o 404 segue decidido pelo banco. Quem chama
+    (a view) ainda confere o dono no caminho do HIT, porque o payload cacheado
+    pode ter sido gravado por outro usuário.
+
+    TTL de `CACHE_TTL_PEDIDO`; invalidação por chave (`invalidar_pedido`) em
+    toda escrita que muda o pedido - vinda da API ou do worker, com o Redis
+    compartilhado ligando os processos.
+    """
+    inicio = time.perf_counter()
+    if not _cache_ativo():
+        payload = calcular()
+        estado = BYPASS
+        cache_ms = 0.0
+        erro = False
+    else:
+        chave = chave_pedido(pedido_id)
+        inicio_cache = time.perf_counter()
+        payload = cache.get(chave)
+        cache_ms = (time.perf_counter() - inicio_cache) * 1000
+        if payload is not None:
+            estado = HIT
+            erro = False
+        else:
+            payload = calcular()
+            if payload is None:
+                _metricas_de("pedido").registrar(
+                    MISS, cache_ms, (time.perf_counter() - inicio) * 1000
+                )
+                return None, MISS
+            payload = _normalizado(payload)
+            inicio_cache = time.perf_counter()
+            gravado = cache.set(chave, payload, settings.CACHE_TTL_PEDIDO)
+            cache_ms += (time.perf_counter() - inicio_cache) * 1000
+            if gravado is not True:
+                _log_falha("pedido", None)
+                estado = BYPASS
+                erro = True
+            else:
+                estado = MISS
+                erro = False
+
+    _metricas_de("pedido").registrar(
+        estado, cache_ms, (time.perf_counter() - inicio) * 1000, erro
+    )
+    return payload, estado
+
+
 # ---------------------------------------------------------------------------
 # invalidação
 # ---------------------------------------------------------------------------
@@ -421,6 +490,19 @@ def invalidar_detalhe(item_id: Any) -> bool:
     cruzado com o `SET`.
     """
     return bool(cache.delete(chave_detalhe(item_id)))
+
+
+def invalidar_pedido(pedido_id: Any) -> bool:
+    """Apaga a chave do pedido. `True` se a chave existia.
+
+    Chamado de qualquer processo que altere o pedido (API no pagamento recusado,
+    `consumidor._executar_efeito` quando o worker muda o status): o `DEL` vai
+    direto ao Redis compartilhado, então a invalidação não depende de estarmos
+    no mesmo container do leitor. O retorno não diagnostica Redis fora do ar
+    (mesma ressalva de `invalidar_detalhe`); o TTL de `CACHE_TTL_PEDIDO` é a
+    rede de proteção.
+    """
+    return bool(cache.delete(chave_pedido(pedido_id)))
 
 
 def invalidar_detalhes(item_ids: Iterable[Any]) -> int:

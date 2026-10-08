@@ -149,9 +149,12 @@ CACHE_ENABLED = os.environ.get("CACHE_ENABLED", "true").lower() in ("1", "true",
 
 # TTLs do cache-aside. A listagem muda mais rápido (e é a rota mais pesada,
 # com `COUNT` + ordenação), então expira antes; o detalhe de um item é estável
-# e pode ficar mais tempo no cache.
+# e pode ficar mais tempo no cache. O pedido (Aula 11) também é relativamente
+# estável, mas muda de estado com o worker - TTL curto, com invalidação
+# explícita em toda escrita que altera o pedido.
 CACHE_TTL_LISTA = int(os.environ.get("CACHE_TTL_LISTA", "60"))
 CACHE_TTL_DETALHE = int(os.environ.get("CACHE_TTL_DETALHE", "300"))
+CACHE_TTL_PEDIDO = int(os.environ.get("CACHE_TTL_PEDIDO", "60"))
 
 # Prefixo aplicado pelo Django a todas as chaves, para o mesmo Redis poder
 # servir outra aplicação sem colisão de nomes.

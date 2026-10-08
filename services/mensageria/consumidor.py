@@ -37,6 +37,7 @@ from typing import Any, Dict
 from django.utils import timezone
 
 from repositories.models import Pedido, StatusPedido
+from services import cache as cache_service
 from services.mensageria import config, idempotencia
 from services.mensageria.envelope import (
     EnvelopeInvalido,
@@ -108,6 +109,10 @@ def _executar_efeito(envelope: Dict[str, Any]) -> Pedido:
     pedido.status = StatusPedido.CONFIRMADO
     pedido.processado_em = timezone.now()
     pedido.save(update_fields=["status", "processado_em"])
+    # o pedido mudou de estado: o `GET /pedidos/{id}/` em qualquer processo
+    # (a API) precisa ver o novo status na hora. O `DEL` vai direto ao Redis
+    # compartilhado, então a invalidação independe de qual container leu antes.
+    cache_service.invalidar_pedido(pedido_id)
     return pedido
 
 
