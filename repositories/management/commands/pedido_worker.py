@@ -3,7 +3,17 @@
     python manage.py pedido_worker
 
 Serviço separado da API (o mesmo código, outra entrada): a API publica, o
-worker consome. O loop de conexão obedece à regra da spec - **a conexão é
+worker consome. O broker é escolhido por `MENSAGERIA_BROKER`
+(`services.mensageria.facade`):
+
+* **`kafka`** (padrão da Aula 10): consumidor `confluent-kafka` com
+  `enable.auto.commit=False`, retry por republicação com `x-retry-count`,
+  backoff exponencial e DLQ em tópico separado. Vários worker no **mesmo
+  grupo** repartem as 3 partições automaticamente (worker escalável);
+* **qualquer outro valor** (ex.: `rabbitmq`): fluxo da Aula 9, preservado
+  como alternativa — prefetch=1, ack manual, DLQ pelo `x-dead-letter`.
+
+O loop de conexão do RabbitMQ obedece à regra da spec - **a conexão é
 mantida enquanto saudável e só é recriada quando realmente cai**:
 
 * queda da conexão -> espera fixa (5s) e uma nova tentativa;
@@ -27,13 +37,16 @@ from typing import Optional
 
 from django.core.management.base import BaseCommand
 
-from services.mensageria import config, consumidor, topologia
+from services.mensageria import config, facade
 
 logger = logging.getLogger(__name__)
 
 
 class Command(BaseCommand):
-    help = "Consome o evento PedidoCriado do RabbitMQ (idempotente, com retry e DLQ)."
+    help = (
+        "Consome o evento PedidoCriado no broker ativo (MENSAGERIA_BROKER: "
+        "kafka com idempotência/retry/DLQ, ou rabbitmq da Aula 9)."
+    )
 
     def __init__(self) -> None:
         super().__init__()
@@ -56,10 +69,14 @@ class Command(BaseCommand):
 
     # -- consumo -----------------------------------------------------------
     def _ao_receber(self, channel, method, properties, body) -> None:
+        from services.mensageria import consumidor
+
         consumidor.processar(channel, method, properties, body)
 
     def _consumir(self, conexao) -> None:
         """Declara topologia, liga o consumidor e bloqueia até a conexão cair."""
+        from services.mensageria import topologia
+
         canal = conexao.channel()
         topologia.declarar_topologia(canal)
         # confirm_delivery vale também para as republicações do retry
@@ -103,6 +120,25 @@ class Command(BaseCommand):
         signal.signal(signal.SIGTERM, self._ao_encerrar)
         signal.signal(signal.SIGINT, self._ao_encerrar)
 
+        if facade.usando_kafka():
+            self._rodar_kafka()
+        else:
+            self._rodar_rabbitmq()
+
+    def _rodar_kafka(self) -> None:
+        """Delega ao consumidor Kafka da Aula 10 (ver serviços.mensageria)."""
+        from services.mensageria import consumidor_kafka
+
+        logger.info(
+            "Worker iniciando com Apache Kafka: topico=%s dlq=%s group=%s",
+            config.KAFKA_TOPIC_PEDIDO_CRIADO,
+            config.KAFKA_TOPIC_DLQ,
+            config.KAFKA_GROUP_ID,
+        )
+        consumidor_kafka.rodar_consumidor(deve_parar=lambda: self._parar)
+        logger.info("Worker encerrado.")
+
+    def _rodar_rabbitmq(self) -> None:
         logger.info(
             "Worker iniciando: fila=%s exchange=%s dlq=%s",
             config.QUEUE_PEDIDO_CRIADO,
