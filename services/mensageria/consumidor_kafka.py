@@ -1,4 +1,4 @@
-"""Consumidor Kafka do evento `PedidoCriado` (Aula 10).
+"""Consumidor Kafka com especificação de evento injetável (Aula 10/11).
 
 Espelha a máquina de estados do consumidor RabbitMQ da Aula 9, trocando o
 handshake de fila pela semântica de offset do Kafka:
@@ -10,6 +10,12 @@ validar contrato -> checar idempotência -> (duplicada? commit)
                                    -> republicação falhou? SEM commit (reentrega)
         -> tentativas esgotadas? publicar na DLQ -> commit
 ```
+
+O que varia entre eventos está na `EspecEvento` (tópico, DLQ, group, efeito);
+o resto - máquina de estados, backoff, DLQ, commit manual - é o mesmo para
+`PedidoCriado` e `PagamentoProcessado`. `rodar_consumidor` usa a especificação
+do `PedidoCriado` por padrão, então o pedido-worker da Aula 10 continua
+chamando `rodar_consumidor(deve_parar=...)` sem mudar.
 
 Decisões que explicam o desenho:
 
@@ -24,14 +30,16 @@ Decisões que explicam o desenho:
   mensagem nunca some.
 * **Mesma chave de partição no retry.** `idempotency_key` leva o retry à
   mesma partição da original: a ordem por chave de negócio é preservada.
-* **DLQ é publicação num tópico separado** (`pedidos.pedidocriado.dlq`),
-  mantendo a payload original (inclusive contrato inválido) e o contador.
-  Tópico morto **sem consumidor**: reprocessar é decisão operacional.
-* **Contrato quebrado não faz retry.** Vai direto para a DLQ, idem Aula 9.
-
-O efeito e a falha forçada são reutilizados do consumidor RabbitMQ
-(`consumidor._executar_efeito`, `consumidor._falha_forcada`): são puros, não
-tocam no canal do broker.
+* **DLQ é publicação no tópico morto da própria especificação** (ex.:
+  `pedidos.pedidocriado.dlq`), mantendo a payload original (inclusive contrato
+  inválido) e o contador. Tópico morto **sem consumidor**: reprocessar é
+  decisão operacional.
+* **Contrato quebrado não faz retry.** Vai direto para a DLQ, idem Aula 9 —
+  inclusive quando o `event_type` é válido, mas não é o esperado para o
+  tópico (mensagem publicada no tópico errado).
+* **O efeito vem na especificação** (`consumidor._executar_efeito` para o
+  pedido, o efeito do worker de notificação para o pagamento): são puros, não
+  tocam no canal do broker.
 """
 
 from __future__ import annotations
@@ -39,6 +47,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
 from confluent_kafka import KafkaError, Message
@@ -47,6 +56,7 @@ from confluent_kafka import Consumer
 from services.mensageria import config, idempotencia, produtor_kafka, topologia_kafka
 from services.mensageria.consumidor import _executar_efeito, _falha_forcada
 from services.mensageria.envelope import (
+    EVENTO_TYPE,
     EnvelopeInvalido,
     desserializar,
     serializar,
@@ -54,6 +64,40 @@ from services.mensageria.envelope import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class EspecEvento:
+    """Tudo que varia entre eventos no consumo Kafka.
+
+    * `event_type` - contrato esperado no tópico; mensagem de outro evento é
+      contrato inválida e vai para a DLQ;
+    * `topico` / `topico_dlq` - onde consumir e para onde mortas as
+      mensagens do evento;
+    * `group_id` / `cliente_id` - cada worker com o seu group (histórico de
+      offset independente) e o seu client.id rastreável;
+    * `efeito` - função pura que aplica o evento no banco e devolve o pedido
+      afetado (ou `None`), usado também no log e no registro de idempotência.
+    """
+
+    event_type: str
+    topico: str
+    topico_dlq: str
+    group_id: str
+    cliente_id: str
+    efeito: Callable[[Dict[str, Any]], Any]
+
+
+def espec_pedido_criado() -> EspecEvento:
+    """Especificação do `PedidoCriado` (Aula 10) - default de `rodar_consumidor`."""
+    return EspecEvento(
+        event_type=EVENTO_TYPE,
+        topico=config.KAFKA_TOPIC_PEDIDO_CRIADO,
+        topico_dlq=config.KAFKA_TOPIC_DLQ,
+        group_id=config.KAFKA_GROUP_ID,
+        cliente_id=f"{config.KAFKA_CLIENT_ID}-consumidor",
+        efeito=_executar_efeito,
+    )
 
 
 def _log(mensagem: str, *, nome_evento: str, **campos: Any) -> None:
@@ -80,13 +124,13 @@ def _ler_retry_count(cabecalhos: Optional[List[tuple]]) -> int:
         return 0
 
 
-def _criar_consumidor() -> Consumer:
+def _criar_consumidor(espec: EspecEvento) -> Consumer:
     return Consumer(
         {
             "bootstrap.servers": config.KAFKA_BOOTSTRAP_SERVERS,
             "security.protocol": config.KAFKA_SECURITY_PROTOCOL,
-            "group.id": config.KAFKA_GROUP_ID,
-            "client.id": f"{config.KAFKA_CLIENT_ID}-consumidor",
+            "group.id": espec.group_id,
+            "client.id": espec.cliente_id,
             # commit manual, depois do processamento: auto-commit anteciparia o
             # offset e perderia a mensagem numa falha entre entrega e efeito
             "enable.auto.commit": config.KAFKA_ENABLE_AUTO_COMMIT,
@@ -96,7 +140,12 @@ def _criar_consumidor() -> Consumer:
 
 
 def _republicar(
-    produtor, envelope: Dict[str, Any], *, chave: str, tentativa: int
+    produtor,
+    envelope: Dict[str, Any],
+    *,
+    topico: str,
+    chave: str,
+    tentativa: int,
 ) -> Optional[Exception]:
     """Publica o envelope no tópico principal com `x-retry-count` atualizado."""
     cabecalhos: List[tuple] = [
@@ -107,7 +156,7 @@ def _republicar(
     ]
     return produtor_kafka._produzir(
         produtor,
-        config.KAFKA_TOPIC_PEDIDO_CRIADO,
+        topico,
         serializar(envelope),
         chave,
         cabecalhos,
@@ -118,6 +167,7 @@ def _enviar_dlq(
     produtor,
     message: Message,
     *,
+    topico_dlq: str,
     chave: str,
     tentativa: int,
     motivo: str,
@@ -138,20 +188,20 @@ def _enviar_dlq(
     cabecalhos.append(("motivo", motivo.encode("utf-8")))
     return produtor_kafka._produzir(
         produtor,
-        config.KAFKA_TOPIC_DLQ,
+        topico_dlq,
         message.value(),
         chave,
         cabecalhos,
     )
 
 
-def _commit_seguro(consumer: Consumer, message: Message) -> None:
+def _commit_seguro(consumer: Consumer, message: Message, *, nome_evento: str) -> None:
     try:
         consumer.commit(message=message)
     except Exception as erro:  # noqa: BLE001
         _log(
             "falha ao confirmar o offset",
-            nome_evento=config.KAFKA_TOPIC_PEDIDO_CRIADO,
+            nome_evento=nome_evento,
             particao=message.partition(),
             offset=message.offset(),
             motivo=str(erro),
@@ -169,9 +219,10 @@ def _tratar_falha(
     tentativa: int,
     duracao_ms: int,
     chave: str,
+    espec: EspecEvento,
 ) -> None:
     """Retry com backoff, ou DLQ quando as tentativas se esgotam."""
-    nome_evento = config.KAFKA_TOPIC_PEDIDO_CRIADO
+    nome_evento = espec.topico
     idempotency_key = envelope.get("idempotency_key")
     event_id = envelope.get("event_id")
     pedido_id = envelope.get("dados", {}).get("pedido", {}).get("id")
@@ -192,13 +243,14 @@ def _tratar_falha(
         falha = _enviar_dlq(
             produtor,
             message,
+            topico_dlq=espec.topico_dlq,
             chave=chave,
             tentativa=tentativa,
             motivo=str(erro),
         )
         if falha is None:
             # mensagem morta entregue à DLQ: o offset pode avançar
-            _commit_seguro(consumer, message)
+            _commit_seguro(consumer, message, nome_evento=nome_evento)
         else:
             _log(
                 "DLQ rejeitou a mensagem; offset em aberto para reentrega",
@@ -230,10 +282,16 @@ def _tratar_falha(
     # aberto durante a espera, então uma queda do worker não a perde
     time.sleep(backoff_s)
 
-    falha = _republicar(produtor, envelope, chave=chave, tentativa=tentativa)
+    falha = _republicar(
+        produtor,
+        envelope,
+        topico=nome_evento,
+        chave=chave,
+        tentativa=tentativa,
+    )
     if falha is None:
         # só avança o offset da original depois da republicação confirmada
-        _commit_seguro(consumer, message)
+        _commit_seguro(consumer, message, nome_evento=nome_evento)
     else:
         _log(
             "republicação não confirmada; offset em aberto (reentrega na "
@@ -248,11 +306,54 @@ def _tratar_falha(
         )
 
 
+def _contrato_invalido(
+    *,
+    consumer: Consumer,
+    message: Message,
+    produtor,
+    espec: EspecEvento,
+    motivo: str,
+    chave: str,
+    tentativa: int,
+    duracao_ms: int,
+) -> None:
+    """Mensagem de contrato quebrado vai para a DLQ sem retry; commit se der certo."""
+    _log(
+        "contrato inválido; encaminhando para a DLQ sem retry",
+        nome_evento=espec.topico,
+        chave=chave,
+        tentativa=tentativa,
+        duracao_ms=duracao_ms,
+        resultado="contrato_invalido",
+        motivo=motivo,
+    )
+    falha = _enviar_dlq(
+        produtor,
+        message,
+        topico_dlq=espec.topico_dlq,
+        chave=chave,
+        tentativa=tentativa,
+        motivo=motivo,
+    )
+    if falha is None:
+        _commit_seguro(consumer, message, nome_evento=espec.topico)
+    else:
+        _log(
+            "DLQ rejeitou a mensagem malformada; offset em aberto para "
+            "reentrega",
+            nome_evento=espec.topico,
+            chave=chave,
+            duracao_ms=duracao_ms,
+            resultado="dlq_falhou",
+            motivo=str(falha),
+        )
+
+
 def processar_mensagem(
-    consumer: Consumer, message: Message, produtor
+    consumer: Consumer, message: Message, produtor, espec: EspecEvento
 ) -> None:
     """Processa uma mensagem e decide commit, retry ou DLQ."""
-    nome_evento = config.KAFKA_TOPIC_PEDIDO_CRIADO
+    nome_evento = espec.topico
     chave = (message.key() or b"").decode("utf-8", "replace")
     tentativa = _ler_retry_count(message.headers()) + 1
     inicio = time.monotonic()
@@ -263,35 +364,22 @@ def processar_mensagem(
     # 1) contrato ---------------------------------------------------------
     try:
         envelope = validar_envelope(desserializar(message.value()))
+        if envelope["event_type"] != espec.event_type:
+            raise EnvelopeInvalido(
+                f"event_type {envelope['event_type']!r} inesperado para o "
+                f"tópico {nome_evento!r} (esperado {espec.event_type!r})"
+            )
     except EnvelopeInvalido as erro:
-        _log(
-            "contrato inválido; encaminhando para a DLQ sem retry",
-            nome_evento=nome_evento,
+        _contrato_invalido(
+            consumer=consumer,
+            message=message,
+            produtor=produtor,
+            espec=espec,
+            motivo=erro.motivo,
             chave=chave,
             tentativa=tentativa,
             duracao_ms=duracao_ms(),
-            resultado="contrato_invalido",
-            motivo=erro.motivo,
         )
-        falha = _enviar_dlq(
-            produtor,
-            message,
-            chave=chave,
-            tentativa=tentativa,
-            motivo=erro.motivo,
-        )
-        if falha is None:
-            _commit_seguro(consumer, message)
-        else:
-            _log(
-                "DLQ rejeitou a mensagem malformada; offset em aberto para "
-                "reentrega",
-                nome_evento=nome_evento,
-                chave=chave,
-                duracao_ms=duracao_ms(),
-                resultado="dlq_falhou",
-                motivo=str(falha),
-            )
         return
 
     idempotency_key = envelope["idempotency_key"]
@@ -310,13 +398,13 @@ def processar_mensagem(
             duracao_ms=duracao_ms(),
             resultado="duplicada",
         )
-        _commit_seguro(consumer, message)
+        _commit_seguro(consumer, message, nome_evento=nome_evento)
         return
 
     # 3) efeito + registro + commit -----------------------------------------
     try:
         _falha_forcada(idempotency_key)
-        pedido = _executar_efeito(envelope)
+        pedido = espec.efeito(envelope)
         idempotencia.registrar(
             event_type=envelope["event_type"],
             idempotency_key=idempotency_key,
@@ -333,6 +421,7 @@ def processar_mensagem(
             tentativa=tentativa,
             duracao_ms=duracao_ms(),
             chave=chave,
+            espec=espec,
         )
         return
 
@@ -341,26 +430,32 @@ def processar_mensagem(
         nome_evento=nome_evento,
         event_id=event_id,
         idempotency_key=idempotency_key,
-        pedido=pedido.pk,
+        pedido=getattr(pedido, "pk", None),
         tentativa=tentativa,
         duracao_ms=duracao_ms(),
         resultado="sucesso",
     )
-    _commit_seguro(consumer, message)
+    _commit_seguro(consumer, message, nome_evento=nome_evento)
 
 
-def rodar_consumidor(*, deve_parar: Callable[[], bool]) -> None:
-    """Loop principal do worker Kafka; retorna quando `deve_parar()` é `True`."""
+def rodar_consumidor(
+    *, deve_parar: Callable[[], bool], espec: Optional[EspecEvento] = None
+) -> None:
+    """Loop principal do worker Kafka; retorna quando `deve_parar()` é `True`.
+
+    Sem `espec`, consome `PedidoCriado` no group do pedido-worker (Aula 10).
+    """
+    espec = espec or espec_pedido_criado()
     topologia_kafka.criar_topicos()
     produtor = produtor_kafka.obter_produtor()
-    consumidor = _criar_consumidor()
-    consumidor.subscribe([config.KAFKA_TOPIC_PEDIDO_CRIADO])
+    consumidor = _criar_consumidor(espec)
+    consumidor.subscribe([espec.topico])
 
     logger.info(
         "Worker consumindo %s (group=%s, auto.offset.reset=%s, "
         "enable.auto.commit=%s, max_tentativas=%s, backoff_base=%ss)",
-        config.KAFKA_TOPIC_PEDIDO_CRIADO,
-        config.KAFKA_GROUP_ID,
+        espec.topico,
+        espec.group_id,
         config.KAFKA_AUTO_OFFSET_RESET,
         config.KAFKA_ENABLE_AUTO_COMMIT,
         config.MAX_TENTATIVAS,
@@ -378,7 +473,7 @@ def rodar_consumidor(*, deve_parar: Callable[[], bool]) -> None:
                     continue
                 _log(
                     "erro de polling do broker; mensagem não processada",
-                    nome_evento=config.KAFKA_TOPIC_PEDIDO_CRIADO,
+                    nome_evento=espec.topico,
                     particao=message.partition(),
                     offset=message.offset(),
                     resultado="erro_broker",
@@ -386,14 +481,14 @@ def rodar_consumidor(*, deve_parar: Callable[[], bool]) -> None:
                 )
                 continue
             try:
-                processar_mensagem(consumidor, message, produtor)
+                processar_mensagem(consumidor, message, produtor, espec)
             except Exception as erro:  # noqa: BLE001 - falha inesperada
                 # offset em aberto: na próxima conexão/rebalance a mensagem é
                 # reentregue; o log é o rastro operacional do defeito
                 _log(
                     "falha inesperada ao processar; offset em aberto para "
                     "reentrega",
-                    nome_evento=config.KAFKA_TOPIC_PEDIDO_CRIADO,
+                    nome_evento=espec.topico,
                     particao=message.partition(),
                     offset=message.offset(),
                     resultado="erro_inesperado",

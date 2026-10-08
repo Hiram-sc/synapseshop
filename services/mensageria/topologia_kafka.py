@@ -1,20 +1,24 @@
-"""Criação dos tópicos Kafka da Aula 10 (idempotente).
+"""Criação dos tópicos Kafka da Aula 10 (idempotente), agora os da 11.
 
 Topologia Kafka:
 
 ```text
-produtor --(pedidos.pedidocriado, 3 partições)--> chave de partição = idempotency_key
+produtor --(tópico do event_type, 3 partições)--> chave de partição = idempotency_key
                                                       |
                                        tentativas esgotadas / contrato inválido
                                                       v
-                                   pedidos.pedidocriado.dlq (1 partição)
+                                        tópico do event_type .dlq (1 partição)
 ```
 
-* **`pedidos.pedidocriado`**: 3 partições (`KAFKA_TOPIC_PARTITIONS`) para
-  paralelismo do worker; `retention.ms` de 7 dias (`KAFKA_RETENTION_MS_MAIN`);
-* **`pedidos.pedidocriado.dlq`**: 1 partição (`KAFKA_DLQ_PARTITIONS`),
-  retenção de 28 dias (`KAFKA_RETENTION_MS_DLQ`) para sobrar tempo de
-  inspeção/correção de mensagens mortas.
+Tópicos principais, 3 partições (`KAFKA_TOPIC_PARTITIONS`) para paralelismo
+do worker e `retention.ms` de 7 dias (`KAFKA_RETENTION_MS_MAIN`):
+
+* `pedidos.pedidocriado` (Aula 10);
+* `pedidos.pagamentoprocessado` e `pedidos.notificacaoenviada` (Aula 11).
+
+Cada tópico tem a sua DLQ com 1 partição (`KAFKA_DLQ_PARTITIONS`) e retenção
+de 28 dias (`KAFKA_RETENTION_MS_DLQ`) para sobrar tempo de
+inspeção/correção de mensagens mortas.
 
 A criação é idempotente e segura para corrida: primeira chamada no processo
 cria o que faltar com `AdminClient`; se dois processos baterem ao mesmo tempo
@@ -41,13 +45,29 @@ logger = logging.getLogger(__name__)
 _mutex = threading.Lock()
 _topicos_criados = False
 
-#: tópicos (nome, num_particoes, retention_ms) declarados por esta aula
+#: tópicos (nome, num_particoes, retention_ms) declarados pelas Aulas 10 e 11
 _ALVOS: Dict[str, Tuple[int, int]] = {
     config.KAFKA_TOPIC_PEDIDO_CRIADO: (
         config.KAFKA_TOPIC_PARTITIONS,
         config.KAFKA_RETENTION_MS_MAIN,
     ),
     config.KAFKA_TOPIC_DLQ: (
+        config.KAFKA_DLQ_PARTITIONS,
+        config.KAFKA_RETENTION_MS_DLQ,
+    ),
+    config.KAFKA_TOPIC_PAGAMENTO_PROCESSADO: (
+        config.KAFKA_TOPIC_PARTITIONS,
+        config.KAFKA_RETENTION_MS_MAIN,
+    ),
+    config.KAFKA_TOPIC_PAGAMENTO_DLQ: (
+        config.KAFKA_DLQ_PARTITIONS,
+        config.KAFKA_RETENTION_MS_DLQ,
+    ),
+    config.KAFKA_TOPIC_NOTIFICACAO_ENVIADA: (
+        config.KAFKA_TOPIC_PARTITIONS,
+        config.KAFKA_RETENTION_MS_MAIN,
+    ),
+    config.KAFKA_TOPIC_NOTIFICACAO_DLQ: (
         config.KAFKA_DLQ_PARTITIONS,
         config.KAFKA_RETENTION_MS_DLQ,
     ),
@@ -64,18 +84,19 @@ def _admin() -> AdminClient:
     )
 
 
-def _divergencias(existente) -> List[str]:
+def _divergencias(nome: str, existente) -> List[str]:
     """Avisos quando o tópico já existe com parâmetros diferentes do desejado.
 
     O metadata não traz `retention.ms`, então a conferência é a que é possível
     de forma barata: número de partições. Retenção é verificada na validação
     com `describe_configs` (script de smoke test), não a cada boot.
     """
+    esperado = _ALVOS[nome][0]
     avisos: List[str] = []
-    if len(existente.partitions) != config.KAFKA_TOPIC_PARTITIONS:
+    if len(existente.partitions) != esperado:
         avisos.append(
-            f"pedidos.pedidocriado tem {len(existente.partitions)} partições, "
-            f"desejado {config.KAFKA_TOPIC_PARTITIONS}"
+            f"{nome} tem {len(existente.partitions)} partições, "
+            f"desejado {esperado}"
         )
     return avisos
 
@@ -98,7 +119,7 @@ def criar_topicos(*, forcar: bool = False) -> None:
             existente = metadados.topics.get(nome)
             if existente is None:
                 continue
-            for aviso in _divergencias(existente):
+            for aviso in _divergencias(nome, existente):
                 logger.warning("Tópico existente com parâmetros divergentes: %s", aviso)
 
         novos = [

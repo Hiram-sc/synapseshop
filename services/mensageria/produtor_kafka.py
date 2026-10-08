@@ -1,4 +1,4 @@
-"""Produtor Kafka do evento `PedidoCriado` (Aula 10).
+"""Produtor Kafka dos eventos do SynapseShop (Aula 10, generalizado na 11).
 
 Mesmo contrato do produtor RabbitMQ da Aula 9 (`publicar_pedido_criado` ->
 `True`/`False`), trocando o handshake de confirmação:
@@ -15,9 +15,11 @@ Mesmo contrato do produtor RabbitMQ da Aula 9 (`publicar_pedido_criado` ->
 * **mesma política de log estruturado** com `duracao_ms` e o resultado, para o
   fluxo ser reconstruível por `docker compose logs`.
 
-O tópico é garantido de forma idempotente antes de cada publicação
-(`topologia_kafka.criar_topicos`, memoizado por processo) e a única instância
-de `Producer` é compartilhada por processo (uma conexão, thread-safe).
+O tópico é resolvido pelo `event_type` no mapa de `config` (o mesmo que a
+topologia e o consumidor usam), garantido de forma idempotente antes de cada
+publicação (`topologia_kafka.criar_topicos`, memoizado por processo) e a
+única instância de `Producer` é compartilhada por processo (uma conexão,
+thread-safe).
 """
 
 from __future__ import annotations
@@ -96,13 +98,23 @@ def _produzir(
     return erros[0] if erros else None
 
 
-def publicar_pedido_criado(envelope: Dict[str, Any]) -> bool:
-    """Publica o envelope no tópico principal, com `idempotency_key` de chave.
+def publicar_evento(envelope: Dict[str, Any]) -> bool:
+    """Publica o envelope no tópico do seu `event_type`, com a chave de partição.
 
-    Devolve `True` somente com a confirmação do broker. Qualquer falha é
-    registrada no log e vira `False`: o produtor nunca derruba uma requisição
-    cujo pedido já foi persistido (mesmo contrato da Aula 9).
+    Chave = `idempotency_key`, como na Aula 9/10. Devolve `True` somente com
+    a confirmação do broker. Qualquer falha é registrada no log e vira
+    `False`: o produtor nunca derruba uma requisição cujo registro já foi
+    persistido. Evento sem tópico no mapa também vira `False` com log —
+    nunca cai em tópico errado.
     """
+    topico = config.KAFKA_TOPICO_POR_EVENTO.get(envelope.get("event_type"))
+    if topico is None:
+        logger.error(
+            "event_type sem tópico configurado: %r",
+            envelope.get("event_type"),
+        )
+        return False
+
     inicio = time.monotonic()
     idempotency_key = envelope.get("idempotency_key", "?")
     event_id = envelope.get("event_id", "?")
@@ -110,7 +122,7 @@ def publicar_pedido_criado(envelope: Dict[str, Any]) -> bool:
 
     def log(mensagem: str, *, resultado: str, **campos: Any) -> None:
         registro = {
-            "nome_evento": config.KAFKA_TOPIC_PEDIDO_CRIADO,
+            "nome_evento": topico,
             "mensagem": mensagem,
             "event_id": event_id,
             "idempotency_key": idempotency_key,
@@ -125,7 +137,7 @@ def publicar_pedido_criado(envelope: Dict[str, Any]) -> bool:
         produtor = obter_produtor()
         erro = _produzir(
             produtor,
-            config.KAFKA_TOPIC_PEDIDO_CRIADO,
+            topico,
             serializar(envelope),
             idempotency_key,
             [
@@ -146,3 +158,12 @@ def publicar_pedido_criado(envelope: Dict[str, Any]) -> bool:
             motivo=str(erro),
         )
         return False
+
+
+def publicar_pedido_criado(envelope: Dict[str, Any]) -> bool:
+    """Alias do caminho da Aula 9/10: publica `PedidoCriado` (e só ele).
+
+    Mantém o nome que a view e os testes já chamam; a resolução do tópico é
+    idêntica à de `publicar_evento` para este `event_type`.
+    """
+    return publicar_evento(envelope)

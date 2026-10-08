@@ -15,9 +15,13 @@ esteja instalada, e nem uma nem outra é carregada quando a outra estiver ativa.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict
 
 from services.mensageria import config
+from services.mensageria.envelope import EVENTO_TYPE
+
+logger = logging.getLogger(__name__)
 
 
 def broker_ativo() -> str:
@@ -30,19 +34,46 @@ def usando_kafka() -> bool:
     return config.MENSAGERIA_BROKER == "kafka"
 
 
-def publicar_pedido_criado(envelope: Dict[str, Any]) -> bool:
-    """Publica o evento `PedidoCriado` no broker ativo.
+def publicar_evento(envelope: Dict[str, Any]) -> bool:
+    """Publica qualquer evento suportado no broker ativo.
 
-    Contrato idêntico ao da Aula 9: devolve `True` somente com a confirmação
-    do broker; qualquer falha vira `False` (o pedido já está persistido e a
-    reposição do evento é decisão operacional). A view chama a fachada, nunca
-    um broker específico.
+    Contrato idêntico ao da Aula 9: devolve `True` somente com a
+    confirmação do broker; qualquer falha vira `False` (o registro já está
+    persistido e a reposição do evento é decisão operacional). A view chama a
+    fachada, nunca um broker específico.
+
+    A paridade de eventos vale por broker: no Kafka, todos os eventos do
+    registro `EVENTOS` têm tópico; no RabbitMQ da Aula 9, só o
+    `PedidoCriado` tem rota — os demais voltam `False` com log, para o
+    chamador tratar como publicação não confirmada (nunca como sucesso
+    silencioso).
     """
+    event_type = envelope.get("event_type")
+
     if usando_kafka():
         from services.mensageria import produtor_kafka
 
-        return produtor_kafka.publicar_pedido_criado(envelope)
+        return produtor_kafka.publicar_evento(envelope)
 
-    from services.mensageria import produtor
+    if event_type == EVENTO_TYPE:
+        from services.mensageria import produtor
 
-    return produtor.publicar_pedido_criado(envelope)
+        return produtor.publicar_pedido_criado(envelope)
+
+    logger.error(
+        "evento %r não tem rota no broker %r (só o %r tem); nada foi publicado",
+        event_type,
+        broker_ativo(),
+        EVENTO_TYPE,
+    )
+    return False
+
+
+def publicar_pedido_criado(envelope: Dict[str, Any]) -> bool:
+    """Publica o evento `PedidoCriado` no broker ativo (caminho da Aula 9/10).
+
+    Delega para `publicar_evento`, que resolve o tópico/rota pelo
+    `event_type` — para este evento o comportamento é o mesmo da Aula 9:
+    `True` com confirmação, `False` em qualquer falha.
+    """
+    return publicar_evento(envelope)

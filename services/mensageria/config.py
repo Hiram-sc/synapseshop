@@ -11,6 +11,12 @@ from __future__ import annotations
 import os
 from urllib.parse import quote_plus
 
+from services.mensageria.envelope import (
+    EVENTO_TYPE,
+    NOTIFICACAO_ENVIADA,
+    PAGAMENTO_PROCESSADO,
+)
+
 # --- broker ---------------------------------------------------------------
 RABBITMQ_HOST = os.environ.get("RABBITMQ_HOST", "rabbitmq")
 RABBITMQ_PORT = int(os.environ.get("RABBITMQ_PORT", "5672"))
@@ -112,6 +118,29 @@ KAFKA_TOPIC_PARTITIONS = int(os.environ.get('KAFKA_TOPIC_PARTITIONS', '3'))
 KAFKA_DLQ_PARTITIONS = int(os.environ.get('KAFKA_DLQ_PARTITIONS', '1'))
 KAFKA_RETENTION_MS_MAIN = int(os.environ.get('KAFKA_RETENTION_MS_MAIN', str(7*24*3600*1000)))  # 7 dias
 KAFKA_RETENTION_MS_DLQ = int(os.environ.get('KAFKA_RETENTION_MS_DLQ', str(28*24*3600*1000)))  # 28 dias
+
+# kafka topics da Aula 11 (pagamento e notificação)
+KAFKA_TOPIC_PAGAMENTO_PROCESSADO = os.environ.get('KAFKA_TOPIC_PAGAMENTO_PROCESSADO', 'pedidos.pagamentoprocessado')
+KAFKA_TOPIC_PAGAMENTO_DLQ = os.environ.get('KAFKA_TOPIC_PAGAMENTO_DLQ', 'pedidos.pagamentoprocessado.dlq')
+KAFKA_TOPIC_NOTIFICACAO_ENVIADA = os.environ.get('KAFKA_TOPIC_NOTIFICACAO_ENVIADA', 'pedidos.notificacaoenviada')
+KAFKA_TOPIC_NOTIFICACAO_DLQ = os.environ.get('KAFKA_TOPIC_NOTIFICACAO_DLQ', 'pedidos.notificacaoenviada.dlq')
+#: consumer group do notificacao-worker (separado do pedido-worker: cada
+#: worker tem o seu group e o seu efeito)
+KAFKA_GROUP_ID_NOTIFICACAO = os.environ.get('KAFKA_GROUP_ID_NOTIFICACAO', 'synapseshop-notificacao-worker')
+
+#: event_type -> tópico Kafka. Produtor, topologia e consumidor leem o mesmo
+#: mapa, então publicar e consumir nunca divergem. O RabbitMQ não participa:
+#: lá só o `PedidoCriado` tem rota nesta etapa.
+KAFKA_TOPICO_POR_EVENTO = {
+    EVENTO_TYPE: KAFKA_TOPIC_PEDIDO_CRIADO,
+    PAGAMENTO_PROCESSADO: KAFKA_TOPIC_PAGAMENTO_PROCESSADO,
+    NOTIFICACAO_ENVIADA: KAFKA_TOPIC_NOTIFICACAO_ENVIADA,
+}
+KAFKA_DLQ_POR_EVENTO = {
+    EVENTO_TYPE: KAFKA_TOPIC_DLQ,
+    PAGAMENTO_PROCESSADO: KAFKA_TOPIC_PAGAMENTO_DLQ,
+    NOTIFICACAO_ENVIADA: KAFKA_TOPIC_NOTIFICACAO_DLQ,
+}
 
 # kafka producer/consumer
 KAFKA_ENABLE_AUTO_COMMIT = os.environ.get('KAFKA_ENABLE_AUTO_COMMIT', 'false').lower() == 'true'
