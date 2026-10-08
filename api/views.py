@@ -24,7 +24,7 @@ from repositories.models import Category, Item, Pedido, Role
 from services import cache as cache_service
 from services import events
 from services.auth_service import AuthService, InactiveUser, InvalidCredentials
-from services.mensageria import produtor
+from services.mensageria import facade
 from services.mensageria.envelope import montar_pedido_criado
 from services.pedido_service import PedidoInvalido, PedidoService
 
@@ -333,7 +333,7 @@ class PedidoViewSet(mixins.RetrieveModelMixin, viewsets.GenericViewSet):
                     transaction.on_commit(
                         lambda: resultado.__setitem__(
                             "publicado",
-                            produtor.publicar_pedido_criado(envelope),
+                            facade.publicar_pedido_criado(envelope),
                         )
                     )
         except PedidoInvalido as erro:
