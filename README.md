@@ -15,7 +15,8 @@ separado e segue intocado pela API principal.
 | Categorias | `/api/v1/categories/` | leitura pública, escrita `admin` |
 | Itens | `/api/v1/items/` | leitura pública, escrita `admin` |
 | Pedidos | `POST /api/v1/pedidos/`, `GET /api/v1/pedidos/{id}/` | autenticado (dono ou `admin`) |
-| Health check | `/health`, `/health/db` | público |
+| Pagamento | `POST /api/v1/pedidos/{id}/pagamento/` | autenticado (dono ou `admin`) |
+| Health check | `/health`, `/health/pronto` | público |
 
 Leitura do catálogo é pública e **cacheada em Redis**; escrita exige Bearer token
 com papel `admin` e **invalida o cache** do que mudou. A criação de pedido
@@ -24,6 +25,15 @@ worker `pedido-worker` (mesmo grupo de consumo) confirma o pedido consumindo
 esse tópico — com commit pós-processamento, idempotência e DLQ. O broker é
 selecionável: `MENSAGERIA_BROKER=rabbitmq` reativa o fluxo alternativo em
 RabbitMQ.
+
+Na Aula 11 o fluxo **Pedido → Pagamento → Notificação** fecha o ciclo: o
+pagamento simulado publica o `PagamentoProcessado` (com `status` `APROVADO` ou
+`RECUSADO`, decidido pelo cliente no corpo da requisição), o `notificacao-worker`
+consome e registra a `Notificacao` — publicando o evento terminal
+`NotificacaoEnviada` — e o pedido **cancelado** por pagamento recusado é o
+desfecho complementar. O `GET /pedidos/{id}/` também passa a **cache-aside** em
+Redis (TTL 60s, `X-Cache` `HIT`/`MISS`/`BYPASS`, sem vazar pedido alheio), e a API
+ganhou um **readiness** (`/health/pronto`) que atesta PostgreSQL, Redis e broker.
 
 ## 🛠️ Tecnologias
 
@@ -46,8 +56,8 @@ docker compose exec api python manage.py create_users
 A API fica em `http://localhost:8000`, com Browsable API e `/docs`. O broker
 padrão é o Kafka (KRaft single-node; porta do host `29092`), o RabbitMQ
 Management continua em `http://localhost:15672` (usuário/senha `synapseshop`)
-para inspeção do broker alternativo, e o consumidor roda no serviço
-`pedido-worker`.
+para inspeção do broker alternativo, e os consumidores rodam nos serviços
+`pedido-worker` e `notificacao-worker`.
 
 ```bash
 # login
@@ -68,6 +78,39 @@ curl -X POST http://localhost:8000/api/v1/pedidos/ \
   -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
   -d '{"idempotency_key":"pedido-001","itens":[{"item_id":2,"quantidade":2}]}'
 ```
+
+## ⚙️ Pagamento e notificação (Aula 11)
+
+O desfecho é simulação do cliente: `{"status": "APROVADO"}` (padrão, se o corpo
+vier vazio) publica `PagamentoProcessado` e mantém o pedido no fluxo normal; o
+`notificacao-worker` registra a `Notificacao` e publica `NotificacaoEnviada`:
+`{"status": "RECUSADO"}` grava `status=cancelado` no pedido e **não** gera
+notificação. Respostas do endpoint: **201** (evento confirmado), **202**
+(persistiu, broker recusou a publicação), **409** (pedido já tinha pagamento,
+sem republicar), **404** (pedido inexistente ou alheio), **400** (status
+inválido).
+
+```bash
+curl -X POST http://localhost:8000/api/v1/pedidos/1/pagamento/ \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{"status":"APROVADO"}'
+```
+
+O **cache do pedido** atende o `GET /pedidos/{id}/` com TTL 60s
+(`CACHE_TTL_PEDIDO`) e `X-Cache: HIT/MISS/BYPASS`. No `HIT`, a régua do dono
+(`usuario` do payload + papel do requester) continua sendo aplicada, então uma
+chave quente gravada por um usuário **não vaza** o pedido para outro; e toda
+escrita que muda o pedido (o `pedido-worker` ao confirmar, o pagamento recusado
+a ao cancelar) **invalida a chave** — o Redis compartilhado liga os processos,
+e o TTL é a rede de proteção.
+
+**Readiness:** `/health/pronto` responde 200 somente com **PostgreSQL** (`SELECT
+1`), **Redis** (`PING`) e o **broker ativo** (metadados Kafka ou conexão AMQP)
+saudáveis; qualquer queda responde 503. É o alvo do healthcheck da `api` no
+Compose (`python -c urllib`, pois a imagem não tem `curl`).
+
+```bash
+docker compose exec -T api python scripts/smoke_test_fluxo_pagamento.py   # smoke do fluxo
 
 ## 💾 Cache
 
@@ -112,6 +155,19 @@ JSON com valores monetários em string:
 |---|---|---|
 | `pedidos.pedidocriado` | 3 | 7 dias |
 | `pedidos.pedidocriado.dlq` | 1 | 28 dias |
+| `pedidos.pagamentoprocessado` | 3 | 7 dias |
+| `pedidos.pagamentoprocessado.dlq` | 1 | 28 dias |
+| `pedidos.notificacaoenviada` | 3 | 7 dias |
+| `pedidos.notificacaoenviada.dlq` | 1 | 28 dias |
+
+O registro `EVENTOS` (em `services/mensageria/envelope.py`) passa a conhecer o
+`PagamentoProcessado` e o `NotificacaoEnviada`, com o mesmo contrato e valores
+monetários em string. O produtor é genérico (`publicar_evento`, resolvendo o
+tópico por `event_type`); cada evento carrega a própria `idempotency_key`:
+`pagamento:{pedido_id}` e `notificacao:{pagamento_id}`. No RabbitMQ
+(alternativo), apenas o `PedidoCriado` tem rota — os eventos da Aula 11
+retornam `False` e o `notificacao-worker` **recusa iniciar** se o broker ativo
+for o RabbitMQ.
 
 **Produtor:** `POST /api/v1/pedidos/` persiste e publica **com
 `key=idempotency_key`** (chave de partição) e confirmação pelo broker
@@ -124,7 +180,9 @@ republicar).
 processamento** (ou da confirmação de reentrega/DLQ). O `group.id` reparte as
 3 partições entre réplicas do `pedido-worker` (até 3 workers escalam o
 consumo; offsets são por grupo — um grupo novo relê do início sem afetar o
-trabalho).
+trabalho). O `notificacao-worker` consome o `pedidos.pagamentoprocessado` com
+**group próprio** (`KAFKA_GROUP_ID_NOTIFICACAO`), publica o
+`NotificacaoEnviada` para `APROVADO` e encerra sem publicação para `RECUSADO`.
 
 **Idempotência** — mesma `idempotency_key` deduplica em dois níveis:
 `UNIQUE (usuario, idempotency_key)` no `Pedido`
@@ -143,6 +201,7 @@ reprocessar é decisão operacional. Contrato inválido vai direto à DLQ, sem r
 docker compose logs -f pedido-worker                              # fluxo do consumidor Kafka
 docker compose exec -T api python scripts/smoke_test_mensageria_kafka.py          # smoke Kafka
 docker compose exec -T api python scripts/smoke_test_mensageria_kafka.py --falha  # retry→DLQ
+docker compose exec -T api python scripts/smoke_test_fluxo_pagamento.py           # fluxo pagamento+notificação+cache+health
 docker compose exec -T api python scripts/benchmark_mensageria_kafka.py --n 30    # latência/throughput/dedupe
 PEDIDO_WORKER_FALHA_IDEM_KEYS='falha-*' docker compose up -d pedido-worker  # simulação
 docker compose up -d pedido-worker                                # volta ao padrão
@@ -169,24 +228,28 @@ docker compose exec -T api python manage.py test -v 1
 ```text
 aula2/
 ├── api/                    views, serializers, permissões, throttling, paginação
-│   └── views.py            cache-aside nas leituras, eventos nas escritas,
-│                           PedidoViewSet (produtor do PedidoCriado)
-├── config/settings.py      DRF, JWT, CACHES no Redis
+│   ├── views.py            cache-aside nas leituras (itens e pedido), eventos nas
+│   │                       escritas, PedidoViewSet e PagamentoView (Aula 11)
+│   └── health.py           readiness /health/pronto (PostgreSQL, Redis, broker)
+├── config/settings.py      DRF, JWT, CACHES no Redis, TTLs do cache
 ├── repositories/           models, services, commands, migrations
-│   ├── models.py               Pedido, PedidoItem, EventoProcessado
+│   ├── models.py               Pedido, PedidoItem, Pagamento, Notificacao, EventoProcessado
 │   ├── pedido_repository.py    escrita atômica do pedido + itens
 │   └── management/commands/
 │       ├── cache_stats.py      inventário de chaves e métricas
 │       ├── cache_benchmark.py  sem cache vs MISS vs HIT
 │       ├── pedido_worker.py    consumidor do broker ativo (Kafka ou RabbitMQ)
+│       ├── notificacao_worker.py  consumidor do PagamentoProcessado (Aula 11)
 │       └── limpar_eventos_processados.py  limpeza de EventoProcessado
-├── services/               cache, events, auth, user, pedido, mensageria
-│   ├── cache.py            chaves, geração, TTL, fail-open, métricas
+├── services/               cache, events, auth, user, pedido, pagamento, notificação
+│   ├── cache.py            chaves, geração, TTL, fail-open, métricas (itens e pedido)
 │   ├── events.py           barramento in-process
 │   ├── cache_invalidation.py  regras de invalidação
 │   ├── pedido_service.py   regras do pedido (total no servidor)
+│   ├── pagamento_service.py    um pagamento por pedido; RECUSADO cancela (Aula 11)
+│   ├── notificacao_service.py  efeito do PagamentoProcessado no banco (Aula 11)
 │   └── mensageria/         envelope, idempotência, config e:
-│       ├── facade.py           seleção do broker (MENSAGERIA_BROKER)
+│       ├── facade.py           seleção do broker (MENSAGERIA_BROKER) e publicar_evento
 │       ├── produtor.py         produtor RabbitMQ (broker alternativo)
 │       ├── consumidor.py       consumidor RabbitMQ (broker alternativo)
 │       ├── topologia.py        topologia RabbitMQ (broker alternativo)
@@ -196,6 +259,7 @@ aula2/
 ├── scripts/
 │   ├── smoke_test_mensageria.py          validação pontual do fluxo RabbitMQ
 │   ├── smoke_test_mensageria_kafka.py    validação pontual do fluxo Kafka
+│   ├── smoke_test_fluxo_pagamento.py     fluxo pagamento+notificação+cache+health
 │   └── benchmark_mensageria_kafka.py     latência, throughput e trade-off do dedupe
 ├── tests/                  suíte Django (118 testes)
 ├── docs/                   documentação técnica do projeto
@@ -205,7 +269,7 @@ aula2/
 │   ├── AULA_09_MENSAGERIA_ASSINCRONA.md
 │   └── AULA_10_MENSAGERIA_APACHE_KAFKA.md
 ├── inventory/              microsserviço FastAPI separado (intocado)
-├── docker-compose.yml      db, cache, rabbitmq, kafka, api, pedido-worker
+├── docker-compose.yml      db, cache, rabbitmq, kafka, api, pedido-worker, notificacao-worker
 ├── Dockerfile
 ├── .env.example            variáveis de ambiente sem segredos
 └── requirements.txt
