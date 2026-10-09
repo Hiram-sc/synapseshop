@@ -142,4 +142,4 @@ class PedidoService:
 
 def total_formatado(pedido: Pedido) -> str:
     """Total como string decimal, igual ao formato do evento."""
-    return _decimal_para_str(pedido.total)
+    return decimal_para_str(pedido.total)
