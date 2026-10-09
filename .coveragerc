@@ -1,0 +1,19 @@
+# Escopo da medição de cobertura (Aula 12).
+#
+# Global: api, services e repositories. `repositories/migrations/` é código
+# gerado pelo `makemigrations` e validado por `tests/test_migrations.py`; medir
+# cobertura de código gerado não diz nada sobre a suíte, então fica fora.
+[run]
+source =
+    api
+    services
+    repositories
+omit =
+    */migrations/*
+    */__pycache__/*
+branch = False
+
+[report]
+show_missing = True
+skip_covered = False
+precision = 2
