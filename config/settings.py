@@ -23,6 +23,10 @@ INSTALLED_APPS = [
     # `django_filters` precisa estar instalado para que os templates do
     # formulário de filtro da Browsable API sejam encontrados
     "django_filters",
+    # Aula 13 - geracao do contrato OpenAPI e das UIs (Swagger/ReDoc). O
+    # `sidecar` publica os assets estaticos sem depender de CDN externa.
+    "drf_spectacular",
+    "drf_spectacular_sidecar",
     "repositories",
     "api",
 ]
@@ -73,6 +77,9 @@ REST_FRAMEWORK = {
         "rest_framework.renderers.JSONRenderer",
         "rest_framework.renderers.BrowsableAPIRenderer",
     ],
+    # Aula 13 - o contrato OpenAPI e gerado a partir do codigo (schemas,
+    # serializers e views) pelo drf-spectacular.
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "UNAUTHENTICATED_USER": None,
     # Autenticação da API: o token JWT chega no header `Authorization: Bearer`.
     # A biblioteca lê o header, valida assinatura/expiração e carrega o
@@ -103,6 +110,77 @@ REST_FRAMEWORK = {
         "admin_write": os.environ.get("THROTTLE_ADMIN_WRITE_RATE", "30/min"),
     },
     "TEST_REQUEST_DEFAULT_FORMAT": "json",
+}
+
+# ---------------------------------------------------------------------------
+# Aula 13 - documentacao da API (OpenAPI 3 + Swagger UI + ReDoc)
+# ---------------------------------------------------------------------------
+# O contrato e gerado do codigo (serializers/views) e versionado em
+# `docs/openapi.yaml` pelo comando `python manage.py gerar_openapi`. As UIs
+# usam os assets do `drf-spectacular-sidecar` (servidos pela propria
+# aplicacao, sem CDN externa).
+SPECTACULAR_SETTINGS = {
+    "TITLE": "SynapseShop API",
+    "VERSION": "1.0.0",
+    "DESCRIPTION": (
+        "API de catalogo e pedidos do SynapseShop (Django REST Framework).\n\n"
+        "## Convencoes\n"
+        "- Base: `/api/v1/`.\n"
+        "- Autenticacao: `Authorization: Bearer <token>` (JWT), emitido por "
+        "`POST /api/v1/auth/login/`.\n"
+        "- Paginacao: `?page=<n>&limit=<1..100>` (envelope `count`, `next`, "
+        "`previous`, `results`).\n"
+        "- Filtros: `?search=`, `?is_active=`, `?category=` (itens) e "
+        "`?search=` (categorias).\n"
+        "- Ordenacao: `?ordering=campo` e `?ordering=-campo`.\n"
+        "- Idempotencia do pedido: campo `idempotency_key` no corpo do "
+        "`POST /api/v1/pedidos/` (nao um header).\n\n"
+        "## Divergencias em relacao a convencoes propostas\n"
+        "`nextCursor`, `?status=` e `sort=campo:ordem` nao sao suportados; "
+        "`X-Trace-Id` nao e aplicado. Ver `docs/`."
+    ),
+    # o endpoint do proprio schema nao aparece dentro do schema
+    "SERVE_INCLUDE_SCHEMA": False,
+    # separa request e response do mesmo serializer
+    "COMPONENT_SPLIT_REQUEST": True,
+    # dois campos `status` (Pedido/Pagamento) com choices diferentes: o nome
+    # do enum no schema fica o nome da classe, sem sufixo colidido
+    "ENUM_NAME_OVERRIDES": {
+        "PedidoStatus": "repositories.models.StatusPedido",
+        "PagamentoStatus": "repositories.models.StatusPagamento",
+    },
+    # assets servidos localmente (sem depender de CDN)
+    "SWAGGER_UI_DIST": "SIDECAR",
+    "SWAGGER_UI_FAVICON_HREF": "SIDECAR",
+    "REDOC_DIST": "SIDECAR",
+    # esquema de seguranca reaproveitado pelas views autenticadas
+    "APPEND_COMPONENTS": {
+        "securitySchemes": {
+            "bearerAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "JWT",
+                "description": "Token de acesso JWT no header `Authorization`.",
+            }
+        }
+    },
+"TAGS": [
+        {"name": "auth", "description": "Login e usuário autenticado."},
+        {"name": "categories", "description": "Catalogo: categorias."},
+        {"name": "health", "description": "Liveness e readiness da API."},
+        {"name": "items", "description": "Catalogo: itens."},
+        {"name": "pagamento", "description": "Pagamento simulado do pedido."},
+        {"name": "pedidos", "description": "Criacao e consulta de pedidos."},
+    ],
+    "SERVERS": [
+        {"url": "http://localhost:8000", "description": "Desenvolvimento local (Docker Compose)."},
+    ],
+    # completa o contrato com erros padrao e endpoints de saude que o
+    # drf-spectacular nao inferiria do codigo
+    "POSTPROCESSING_HOOKS": [
+        "drf_spectacular.hooks.postprocess_schema_enums",
+        "api.openapi.erros_e_infra",
+    ],
 }
 
 # Assinatura e expiração do JWT. A chave nunca é escrita no código: vem do
