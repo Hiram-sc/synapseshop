@@ -1,0 +1,9 @@
+extends: [["spectral:oas", all]]
+
+rules:
+  # rotas DRF termina com slash de propósito (APPEND_SLASH do Django)
+  path-keys-no-trailing-slash: off
+  # projeto de curso sem licença pública: não há URL de licença válida
+  license-url: off
+  # sem homepage pública no contrato: contact fica name+email, url é opcional
+  contact-properties: off

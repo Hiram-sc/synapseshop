@@ -1,0 +1,1621 @@
+openapi: 3.0.3
+info:
+  title: SynapseShop API
+  version: 1.0.0
+  description: 'API de catalogo e pedidos do SynapseShop (Django REST Framework).
+
+
+    ## Convencoes
+
+    - Base: `/api/v1/`.
+
+    - Autenticacao: `Authorization: Bearer <token>` (JWT), emitido por `POST /api/v1/auth/login/`.
+
+    - Paginacao: `?page=<n>&limit=<1..100>` (envelope `count`, `next`, `previous`,
+    `results`).
+
+    - Filtros: `?search=`, `?is_active=`, `?category=` (itens) e `?search=` (categorias).
+
+    - Ordenacao: `?ordering=campo` e `?ordering=-campo`.
+
+    - Idempotencia do pedido: campo `idempotency_key` no corpo do `POST /api/v1/pedidos/`
+    (nao um header).
+
+
+    ## Divergencias em relacao a convencoes propostas
+
+    `nextCursor`, `?status=` e `sort=campo:ordem` nao sao suportados; `X-Trace-Id`
+    nao e aplicado. Ver `docs/`.'
+  contact:
+    name: Equipe SynapseShop
+    email: api@synapseshop.dev
+  license:
+    name: Propriedade do curso (uso acadêmico) - sem licença pública.
+paths:
+  /api/v1/auth/login/:
+    post:
+      operationId: v1_auth_login_create
+      description: 'Autentica credenciais e devolve um token JWT de acesso.
+
+
+        Rota pública por definição - é a porta de entrada - e com o limite mais
+
+        apertado da API (5 tentativas por minuto, por IP), porque é a única rota
+
+        que recebe credenciais de fora sem token.
+
+
+        Falhas de credencial respondem 401 com mensagem genérica, sem distinguir
+
+        "usuário inexistente" de "senha errada" - assim o login não serve para
+
+        enumerar quais contas existem. Conta desativada responde 403, mas só depois
+
+        que a senha conferiu: quem recebe 403 já provou conhecer a senha, então a
+
+        resposta não vira oráculo de enumeração.'
+      summary: Autentica credenciais e emite um token JWT
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: 'Corpo inválido: `username` e/ou `password` ausentes.'
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Usuário ou senha inválidos.
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Conta desativada.
+        '429':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Limite de tentativas de login excedido (5/min por IP).
+  /api/v1/auth/me/:
+    get:
+      operationId: v1_auth_me_retrieve
+      description: 'Devolve o usuário do token enviado na requisição.
+
+
+        Existe para o cliente (e para os testes) confirmar quem está autenticado
+
+        e qual role o token carrega, sem precisar decodificá-lo à mão.'
+      summary: Usuário do token enviado
+      tags:
+      - auth
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+          description: ''
+        '401':
+          description: Autenticação ausente ou token inválido/expirado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Autenticado, mas sem permissão para a operação.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Limite de requisições excedido. Consulte o header Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/categories/:
+    get:
+      operationId: v1_categories_list
+      description: 'CRUD de categorias.
+
+
+        Leitura (`GET`) é pública; escrita exige `role admin` e o limite de
+
+        escrita (30/min por usuário). `?search=` e `?ordering=` funcionam nas
+
+        duas direções da operação, com a mesma paginação dos itens.
+
+
+        A listagem de categorias **não** é cacheada (o volume é pequeno e a
+
+        invalidação não custaria caro), mas toda escrita aqui invalida o cache de
+
+        `Item`: o `category_name` aparece no detalhe de cada item e a categoria
+
+        também é filtro da listagem de itens.'
+      summary: Lista categorias (paginado)
+      parameters:
+      - name: limit
+        required: false
+        in: query
+        description: Número de resultados a serem retornados por página.
+        schema:
+          type: integer
+      - name: ordering
+        required: false
+        in: query
+        description: Qual campo usar ao ordenar os resultados.
+        schema:
+          type: string
+      - name: page
+        required: false
+        in: query
+        description: Um número de página dentro do conjunto de resultados paginado.
+        schema:
+          type: integer
+      - name: search
+        required: false
+        in: query
+        description: Um termo de busca.
+        schema:
+          type: string
+      tags:
+      - categories
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCategoryList'
+          description: ''
+        '429':
+          description: Limite de requisições excedido. Consulte o header Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      operationId: v1_categories_create
+      description: 'CRUD de categorias.
+
+
+        Leitura (`GET`) é pública; escrita exige `role admin` e o limite de
+
+        escrita (30/min por usuário). `?search=` e `?ordering=` funcionam nas
+
+        duas direções da operação, com a mesma paginação dos itens.
+
+
+        A listagem de categorias **não** é cacheada (o volume é pequeno e a
+
+        invalidação não custaria caro), mas toda escrita aqui invalida o cache de
+
+        `Item`: o `category_name` aparece no detalhe de cada item e a categoria
+
+        também é filtro da listagem de itens.'
+      summary: Cria categoria (admin)
+      tags:
+      - categories
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CategoryRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CategoryRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CategoryRequest'
+        required: true
+      security:
+      - bearerAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Category'
+          description: ''
+        '401':
+          description: Autenticação ausente ou token inválido/expirado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Autenticado, mas sem permissão para a operação.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Limite de requisições excedido. Consulte o header Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/categories/{id}/:
+    get:
+      operationId: v1_categories_retrieve
+      description: 'CRUD de categorias.
+
+
+        Leitura (`GET`) é pública; escrita exige `role admin` e o limite de
+
+        escrita (30/min por usuário). `?search=` e `?ordering=` funcionam nas
+
+        duas direções da operação, com a mesma paginação dos itens.
+
+
+        A listagem de categorias **não** é cacheada (o volume é pequeno e a
+
+        invalidação não custaria caro), mas toda escrita aqui invalida o cache de
+
+        `Item`: o `category_name` aparece no detalhe de cada item e a categoria
+
+        também é filtro da listagem de itens.'
+      summary: Detalhe da categoria
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: Um valor inteiro único que identifica este category.
+        required: true
+      tags:
+      - categories
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Category'
+          description: ''
+        '429':
+          description: Limite de requisições excedido. Consulte o header Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    put:
+      operationId: v1_categories_update
+      description: 'CRUD de categorias.
+
+
+        Leitura (`GET`) é pública; escrita exige `role admin` e o limite de
+
+        escrita (30/min por usuário). `?search=` e `?ordering=` funcionam nas
+
+        duas direções da operação, com a mesma paginação dos itens.
+
+
+        A listagem de categorias **não** é cacheada (o volume é pequeno e a
+
+        invalidação não custaria caro), mas toda escrita aqui invalida o cache de
+
+        `Item`: o `category_name` aparece no detalhe de cada item e a categoria
+
+        também é filtro da listagem de itens.'
+      summary: Atualiza categoria (admin)
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: Um valor inteiro único que identifica este category.
+        required: true
+      tags:
+      - categories
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CategoryRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CategoryRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CategoryRequest'
+        required: true
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Category'
+          description: ''
+        '401':
+          description: Autenticação ausente ou token inválido/expirado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Autenticado, mas sem permissão para a operação.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Limite de requisições excedido. Consulte o header Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    patch:
+      operationId: v1_categories_partial_update
+      description: 'CRUD de categorias.
+
+
+        Leitura (`GET`) é pública; escrita exige `role admin` e o limite de
+
+        escrita (30/min por usuário). `?search=` e `?ordering=` funcionam nas
+
+        duas direções da operação, com a mesma paginação dos itens.
+
+
+        A listagem de categorias **não** é cacheada (o volume é pequeno e a
+
+        invalidação não custaria caro), mas toda escrita aqui invalida o cache de
+
+        `Item`: o `category_name` aparece no detalhe de cada item e a categoria
+
+        também é filtro da listagem de itens.'
+      summary: Atualiza parcialmente a categoria (admin)
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: Um valor inteiro único que identifica este category.
+        required: true
+      tags:
+      - categories
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedCategoryRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedCategoryRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedCategoryRequest'
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Category'
+          description: ''
+        '401':
+          description: Autenticação ausente ou token inválido/expirado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Autenticado, mas sem permissão para a operação.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Limite de requisições excedido. Consulte o header Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      operationId: v1_categories_destroy
+      description: 'CRUD de categorias.
+
+
+        Leitura (`GET`) é pública; escrita exige `role admin` e o limite de
+
+        escrita (30/min por usuário). `?search=` e `?ordering=` funcionam nas
+
+        duas direções da operação, com a mesma paginação dos itens.
+
+
+        A listagem de categorias **não** é cacheada (o volume é pequeno e a
+
+        invalidação não custaria caro), mas toda escrita aqui invalida o cache de
+
+        `Item`: o `category_name` aparece no detalhe de cada item e a categoria
+
+        também é filtro da listagem de itens.'
+      summary: Remove categoria (admin)
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: Um valor inteiro único que identifica este category.
+        required: true
+      tags:
+      - categories
+      security:
+      - bearerAuth: []
+      responses:
+        '204':
+          description: No response body
+        '401':
+          description: Autenticação ausente ou token inválido/expirado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Autenticado, mas sem permissão para a operação.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Limite de requisições excedido. Consulte o header Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/items/:
+    get:
+      operationId: v1_items_list
+      description: 'A resposta traz o header `X-Cache` com `HIT`, `MISS` ou `BYPASS`.
+        Filtros: `?search=`, `?is_active=`, `?category=`; ordenação por `?ordering=`.'
+      summary: Lista itens (paginado, cache-aside)
+      parameters:
+      - in: query
+        name: category
+        schema:
+          type: integer
+        description: Filtra os itens da categoria com este id.
+      - in: query
+        name: is_active
+        schema:
+          type: boolean
+        description: Filtra por `is_active` (`true`/`false`).
+      - name: limit
+        required: false
+        in: query
+        description: Número de resultados a serem retornados por página.
+        schema:
+          type: integer
+      - name: ordering
+        required: false
+        in: query
+        description: Qual campo usar ao ordenar os resultados.
+        schema:
+          type: string
+      - name: page
+        required: false
+        in: query
+        description: Um número de página dentro do conjunto de resultados paginado.
+        schema:
+          type: integer
+      - name: search
+        required: false
+        in: query
+        description: Um termo de busca.
+        schema:
+          type: string
+      tags:
+      - items
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedItemList'
+          description: ''
+        '429':
+          description: Limite de requisições excedido. Consulte o header Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      operationId: v1_items_create
+      description: 'CRUD de itens do catálogo, com cache-aside nas leituras.
+
+
+        Mesmas regras de `CategoryViewSet`, somando os filtros `?is_active=` e
+
+        `?category=` - eles são os que sustentam os índices compostos de
+
+        `repositories.models.Item`.
+
+
+        As duas leituras (`list` e `retrieve`) são cache-aside: o cache do Redis é
+
+        consultado primeiro e, quando não há nada, o PostgreSQL responde e o
+
+        resultado é gravado. A resposta sempre traz `X-Cache: HIT|MISS|BYPASS`, e
+
+        toda escrita publica um evento que invalida o que ficou velho.'
+      summary: Cria item (admin)
+      tags:
+      - items
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ItemRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ItemRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ItemRequest'
+        required: true
+      security:
+      - bearerAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Item'
+          description: ''
+        '401':
+          description: Autenticação ausente ou token inválido/expirado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Autenticado, mas sem permissão para a operação.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Limite de requisições excedido. Consulte o header Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/items/{id}/:
+    get:
+      operationId: v1_items_retrieve
+      description: A resposta traz o header `X-Cache` com `HIT`, `MISS` ou `BYPASS`.
+      summary: Detalhe do item (cache-aside)
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: Um valor inteiro único que identifica este item.
+        required: true
+      tags:
+      - items
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Item'
+          description: ''
+        '429':
+          description: Limite de requisições excedido. Consulte o header Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    put:
+      operationId: v1_items_update
+      description: 'CRUD de itens do catálogo, com cache-aside nas leituras.
+
+
+        Mesmas regras de `CategoryViewSet`, somando os filtros `?is_active=` e
+
+        `?category=` - eles são os que sustentam os índices compostos de
+
+        `repositories.models.Item`.
+
+
+        As duas leituras (`list` e `retrieve`) são cache-aside: o cache do Redis é
+
+        consultado primeiro e, quando não há nada, o PostgreSQL responde e o
+
+        resultado é gravado. A resposta sempre traz `X-Cache: HIT|MISS|BYPASS`, e
+
+        toda escrita publica um evento que invalida o que ficou velho.'
+      summary: Atualiza item (admin)
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: Um valor inteiro único que identifica este item.
+        required: true
+      tags:
+      - items
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ItemRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ItemRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ItemRequest'
+        required: true
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Item'
+          description: ''
+        '401':
+          description: Autenticação ausente ou token inválido/expirado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Autenticado, mas sem permissão para a operação.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Limite de requisições excedido. Consulte o header Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    patch:
+      operationId: v1_items_partial_update
+      description: 'CRUD de itens do catálogo, com cache-aside nas leituras.
+
+
+        Mesmas regras de `CategoryViewSet`, somando os filtros `?is_active=` e
+
+        `?category=` - eles são os que sustentam os índices compostos de
+
+        `repositories.models.Item`.
+
+
+        As duas leituras (`list` e `retrieve`) são cache-aside: o cache do Redis é
+
+        consultado primeiro e, quando não há nada, o PostgreSQL responde e o
+
+        resultado é gravado. A resposta sempre traz `X-Cache: HIT|MISS|BYPASS`, e
+
+        toda escrita publica um evento que invalida o que ficou velho.'
+      summary: Atualiza parcialmente o item (admin)
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: Um valor inteiro único que identifica este item.
+        required: true
+      tags:
+      - items
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedItemRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedItemRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedItemRequest'
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Item'
+          description: ''
+        '401':
+          description: Autenticação ausente ou token inválido/expirado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Autenticado, mas sem permissão para a operação.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Limite de requisições excedido. Consulte o header Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      operationId: v1_items_destroy
+      description: 'CRUD de itens do catálogo, com cache-aside nas leituras.
+
+
+        Mesmas regras de `CategoryViewSet`, somando os filtros `?is_active=` e
+
+        `?category=` - eles são os que sustentam os índices compostos de
+
+        `repositories.models.Item`.
+
+
+        As duas leituras (`list` e `retrieve`) são cache-aside: o cache do Redis é
+
+        consultado primeiro e, quando não há nada, o PostgreSQL responde e o
+
+        resultado é gravado. A resposta sempre traz `X-Cache: HIT|MISS|BYPASS`, e
+
+        toda escrita publica um evento que invalida o que ficou velho.'
+      summary: Remove item (admin)
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: Um valor inteiro único que identifica este item.
+        required: true
+      tags:
+      - items
+      security:
+      - bearerAuth: []
+      responses:
+        '204':
+          description: No response body
+        '401':
+          description: Autenticação ausente ou token inválido/expirado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Autenticado, mas sem permissão para a operação.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Limite de requisições excedido. Consulte o header Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/pedidos/:
+    post:
+      operationId: v1_pedidos_create
+      description: "Criação e consulta de pedidos - o produtor da Aula 9.\n\n`POST\
+        \ /api/v1/pedidos/` grava o pedido e publica `PedidoCriado` **depois\ndo commit**;\
+        \ `GET /api/v1/pedidos/{id}/` é a observabilidade: é por ela\nque se vê `status`\
+        \ virar `confirmado` e `processado_em` ganhar valor\nquando o worker termina\
+        \ o consumo.\n\nRespostas do POST:\n\n* **201** - pedido criado e evento confirmado\
+        \ pelo broker\n  (`evento_publicado: true`);\n* **202** - pedido criado, mas\
+        \ o broker **recusou** a publicação\n  (`evento_publicado: false`): o dado\
+        \ está no banco e a reposição do\n  evento é decisão operacional (sem outbox\
+        \ nesta etapa);\n* **200** - a `idempotency_key` já tinha pedido; nada novo\
+        \ é criado nem\n  publicado.\n\nSem `throttle_scope`: o teto aplicável é o\
+        \ `user` global (300/min por\nusuário), que é o correto para uma rota de cliente\
+        \ - o `admin_write`\ncontinua reservado às escritas de catálogo."
+      summary: Cria pedido e publica o evento PedidoCriado
+      tags:
+      - pedidos
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PedidoCreateRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PedidoCreateRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PedidoCreateRequest'
+        required: true
+      security:
+      - bearerAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PedidoCriadoResponse'
+          description: 'Pedido criado e evento confirmado pelo broker (`evento_publicado:
+            true`).'
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PedidoCriadoResponse'
+          description: 'Idempotência: já existia pedido para esta `idempotency_key`.'
+        '202':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PedidoCriadoResponse'
+          description: Pedido persistido, mas o broker recusou a publicação do evento.
+        '400':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: Payload inválido (`itens`/`idempotency_key`).
+        '401':
+          description: Autenticação ausente ou token inválido/expirado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Autenticado, mas sem permissão para a operação.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Limite de requisições excedido. Consulte o header Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/pedidos/{pedido_id}/pagamento/:
+    post:
+      operationId: v1_pedidos_pagamento_create
+      description: "`POST /api/v1/pedidos/{id}/pagamento/` - pagamento simulado (Aula\
+        \ 11).\n\nCorpo: `{\"status\": \"APROVADO\" | \"RECUSADO\"}` (ausente, `APROVADO`).\n\
+        O desfecho é decisão do cliente - simulação determinística, sem regra por\n\
+        valor do pedido - e viaja num único evento `PagamentoProcessado` publicado\n\
+        **depois do commit**, com `idempotency_key = pagamento:{pedido_id}`.\n\nRespostas:\n\
+        \n* **201** - pagamento persistido e evento confirmado pelo broker\n  (`evento_publicado:\
+        \ true`);\n* **202** - pagamento persistido, mas o broker **recusou** a publicação\n\
+        \  (`evento_publicado: false`): o dado está no banco e a reposição do\n  evento\
+        \ é decisão operacional (mesmo contrato do POST do pedido);\n* **409** - o\
+        \ pedido **já tinha pagamento**: nada é recriado nem\n  republicado, e a resposta\
+        \ traz o pagamento existente;\n* **404** - pedido inexistente ou de outro\
+        \ usuário, com a mesma régua do\n  `GET /api/v1/pedidos/{id}/` (sem booleano\
+        \ de existência).\n\n`RECUSADO` grava `status=cancelado` no pedido na mesma\
+        \ transação do\npagamento; `APROVADO` deixa o pedido no fluxo normal (o pedido-worker\n\
+        confirma, e a notificação é consumida adiante pelo notificacao-worker).\n\
+        Sem `throttle_scope`, idem o POST do pedido: vale o teto global `user`."
+      summary: Processa o pagamento simulado do pedido
+      parameters:
+      - in: path
+        name: pedido_id
+        schema:
+          type: integer
+        description: Id do pedido a pagar.
+        required: true
+      tags:
+      - pagamento
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PagamentoCreateRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PagamentoCreateRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PagamentoCreateRequest'
+      security:
+      - bearerAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PagamentoResponse'
+          description: 'Pagamento persistido e evento confirmado pelo broker (`evento_publicado:
+            true`).'
+        '202':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PagamentoResponse'
+          description: Pagamento persistido, mas o broker recusou a publicação do
+            evento.
+        '400':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: '`status` inválido (aceitos: `APROVADO`, `RECUSADO`).'
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Pedido inexistente ou de outro usuário.
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PagamentoJaProcessadoResponse'
+          description: O pedido já tinha pagamento; nada foi recriado nem republicado.
+        '401':
+          description: Autenticação ausente ou token inválido/expirado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Autenticado, mas sem permissão para a operação.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Limite de requisições excedido. Consulte o header Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/pedidos/{id}/:
+    get:
+      operationId: v1_pedidos_retrieve
+      description: A resposta traz o header `X-Cache` com `HIT`, `MISS` ou `BYPASS`.
+      summary: Detalhe do pedido
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: Um valor inteiro único que identifica este pedido.
+        required: true
+      tags:
+      - pedidos
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pedido'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Pedido inexistente ou de outro usuário.
+        '401':
+          description: Autenticação ausente ou token inválido/expirado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Autenticado, mas sem permissão para a operação.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Limite de requisições excedido. Consulte o header Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /health:
+    get:
+      tags:
+      - health
+      summary: Liveness da API
+      description: 'Responde `{"status": "ok"}` enquanto o processo está de pé, sem
+        consultar nenhuma dependência.'
+      operationId: health_liveness
+      responses:
+        '200':
+          description: API viva (processo respondendo).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+  /health/pronto:
+    get:
+      tags:
+      - health
+      summary: Readiness da API
+      description: Responde 200 só quando PostgreSQL, Redis e o broker respondem;
+        qualquer dependência essencial fora responde 503.
+      operationId: health_readiness
+      responses:
+        '200':
+          description: 'Pronto: PostgreSQL, Redis e broker respondem.'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+        '503':
+          description: Alguma dependência essencial (PostgreSQL, Redis ou broker)
+            está indisponível.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  database:
+                    type: string
+                  redis:
+                    type: string
+                  broker:
+                    type: string
+                  status:
+                    type: string
+components:
+  schemas:
+    Category:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          maxLength: 120
+        description:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - id
+      - name
+    CategoryRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        description:
+          type: string
+      required:
+      - name
+    Error:
+      type: object
+      description: 'Formato dos erros simples da API (`detail`).
+
+
+        Erros de validacao (HTTP 400) usam o formato do DRF: um mapa
+
+        `campo -> lista de mensagens`, descrito separadamente.'
+      properties:
+        detail:
+          type: string
+          description: Mensagem legível do erro.
+        code:
+          type: string
+          description: Código estável opcional para tratamento pelo cliente.
+      required:
+      - detail
+    Item:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+        price:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+        category:
+          type: integer
+        category_name:
+          type: string
+          readOnly: true
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - category
+      - category_name
+      - created_at
+      - id
+      - name
+      - price
+      - updated_at
+    ItemRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+        price:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+        category:
+          type: integer
+        is_active:
+          type: boolean
+      required:
+      - category
+      - name
+      - price
+    LoginRequest:
+      type: object
+      description: 'Credenciais recebidas no endpoint de login.
+
+
+        `max_length=128` acompanha a convenção do próprio Django (a coluna
+
+        `password` do `AbstractUser` tem 128 caracteres e é onde o hash cabe), e
+
+        `trim_whitespace=False` evita que um espaço no fim da senha que o usuário
+
+        digitou seja apagado silenciosamente.
+
+
+        O `style` abaixo não é segurança: ele só faz a Browsable API renderizar o
+
+        campo como senha. O que protege o dado de verdade é a resposta nunca
+
+        devolver a senha e o cliente não guardá-la.'
+      properties:
+        username:
+          type: string
+          minLength: 1
+          maxLength: 150
+        password:
+          type: string
+          minLength: 1
+          maxLength: 128
+      required:
+      - password
+      - username
+    LoginResponse:
+      type: object
+      description: Resposta do `POST /api/v1/auth/login/`.
+      properties:
+        access:
+          type: string
+          description: Token JWT de acesso.
+        token_type:
+          type: string
+          description: Tipo do token (sempre `Bearer`).
+        expires_in:
+          type: integer
+          description: Validade do token em segundos.
+        user:
+          allOf:
+          - $ref: '#/components/schemas/User'
+          description: Usuário autenticado.
+      required:
+      - access
+      - expires_in
+      - token_type
+      - user
+    Pagamento:
+      type: object
+      description: Leitura do pagamento; `pedido` sai como id (já endereçável na URL).
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        pedido:
+          type: integer
+          readOnly: true
+        status:
+          allOf:
+          - $ref: '#/components/schemas/PagamentoStatus'
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - id
+      - pedido
+      - status
+    PagamentoCreateRequest:
+      type: object
+      description: 'Corpo do `POST /api/v1/pedidos/{id}/pagamento/`.
+
+
+        `status` é o desfecho decidido pelo cliente (simulação determinística, sem
+
+        regra por valor); ausente no corpo, vale `APROVADO`. Valor fora de
+
+        `APROVADO`/`RECUSADO` é recusado com 400 pelo `ChoiceField`.'
+      properties:
+        status:
+          allOf:
+          - $ref: '#/components/schemas/PagamentoStatus'
+          default: APROVADO
+    PagamentoJaProcessadoResponse:
+      type: object
+      description: Resposta `409` do pagamento já processado.
+      properties:
+        detail:
+          type: string
+          description: Mensagem do conflito.
+        pagamento:
+          allOf:
+          - $ref: '#/components/schemas/Pagamento'
+          description: Pagamento já existente.
+        pedido:
+          allOf:
+          - $ref: '#/components/schemas/Pedido'
+          description: Pedido associado.
+      required:
+      - detail
+      - pagamento
+      - pedido
+    PagamentoResponse:
+      type: object
+      description: Resposta do `POST /api/v1/pedidos/{id}/pagamento/` (201 e 202).
+      properties:
+        pagamento:
+          allOf:
+          - $ref: '#/components/schemas/Pagamento'
+          description: Pagamento persistido.
+        pedido:
+          allOf:
+          - $ref: '#/components/schemas/Pedido'
+          description: Pedido atualizado.
+        evento_publicado:
+          type: boolean
+          description: '`true` quando o broker confirmou a publicação do evento.'
+        detalhe:
+          type: string
+          description: Explica por que o evento não foi publicado (202).
+      required:
+      - evento_publicado
+      - pagamento
+      - pedido
+    PagamentoStatus:
+      enum:
+      - APROVADO
+      - RECUSADO
+      type: string
+      description: '* `APROVADO` - Aprovado
+
+        * `RECUSADO` - Recusado'
+    PaginatedCategoryList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Category'
+    PaginatedItemList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Item'
+    PatchedCategoryRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        description:
+          type: string
+    PatchedItemRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+        price:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+        category:
+          type: integer
+        is_active:
+          type: boolean
+    Pedido:
+      type: object
+      description: Leitura do pedido; `total` sai como string (Decimal do DRF).
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        usuario:
+          type: string
+          readOnly: true
+        status:
+          allOf:
+          - $ref: '#/components/schemas/PedidoStatus'
+          readOnly: true
+        total:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,10}(?:\.\d{0,2})?$
+          readOnly: true
+        processado_em:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        idempotency_key:
+          type: string
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        itens:
+          type: array
+          items:
+            $ref: '#/components/schemas/PedidoItem'
+          readOnly: true
+      required:
+      - created_at
+      - id
+      - idempotency_key
+      - itens
+      - processado_em
+      - status
+      - total
+      - usuario
+    PedidoCreateRequest:
+      type: object
+      description: 'Corpo do `POST /api/v1/pedidos/`.
+
+
+        `idempotency_key` é obrigatória: é ela que faz um POST repetido devolver o
+
+        mesmo pedido em vez de criar outro.'
+      properties:
+        idempotency_key:
+          type: string
+          minLength: 1
+          maxLength: 128
+        itens:
+          type: array
+          items:
+            $ref: '#/components/schemas/PedidoItemCreateRequest'
+      required:
+      - idempotency_key
+      - itens
+    PedidoCriadoResponse:
+      type: object
+      description: Resposta do `POST /api/v1/pedidos/` (201, 200 e 202).
+      properties:
+        pedido:
+          allOf:
+          - $ref: '#/components/schemas/Pedido'
+          description: Pedido persistido.
+        evento_publicado:
+          type: boolean
+          description: '`true` quando o broker confirmou a publicação do evento.'
+        detalhe:
+          type: string
+          description: Explica por que o evento não foi publicado (200/202).
+      required:
+      - evento_publicado
+      - pedido
+    PedidoItem:
+      type: object
+      description: Linha congelada do pedido; `subtotal` é derivado, nunca enviado.
+      properties:
+        item:
+          type: integer
+          nullable: true
+        nome_item:
+          type: string
+          maxLength: 200
+        quantidade:
+          type: integer
+          maximum: 2147483647
+          minimum: 1
+        preco_unitario:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+        subtotal:
+          type: string
+          readOnly: true
+      required:
+      - nome_item
+      - preco_unitario
+      - quantidade
+      - subtotal
+    PedidoItemCreateRequest:
+      type: object
+      description: 'Linha recebida no POST do pedido: só o que o cliente decide.
+
+
+        Preço e nome não vêm daqui de propósito: são resolvidos no servidor a
+
+        partir do catálogo (`services/pedido_service.py`).'
+      properties:
+        item_id:
+          type: integer
+          minimum: 1
+        quantidade:
+          type: integer
+          minimum: 1
+      required:
+      - item_id
+      - quantidade
+    PedidoStatus:
+      enum:
+      - criado
+      - confirmado
+      - cancelado
+      type: string
+      description: '* `criado` - Criado
+
+        * `confirmado` - Confirmado
+
+        * `cancelado` - Cancelado'
+    RoleEnum:
+      enum:
+      - admin
+      - user
+      type: string
+      description: '* `admin` - Administrador
+
+        * `user` - Usuário'
+    User:
+      type: object
+      description: 'Dados públicos de um usuário logado.
+
+
+        `password` e `last_login` ficam de fora de propósito: a senha nunca
+
+        retorna na API, nem mesmo como hash.'
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        username:
+          type: string
+          readOnly: true
+          title: Usuário
+          description: Obrigatório. 150 caracteres ou menos. Letras, números e @/./+/-/_
+            apenas.
+        email:
+          type: string
+          format: email
+          readOnly: true
+          title: Endereço de email
+        role:
+          allOf:
+          - $ref: '#/components/schemas/RoleEnum'
+          readOnly: true
+        is_active:
+          type: boolean
+          readOnly: true
+          title: Ativo
+          description: Indica que o usuário será tratado como ativo. Ao invés de excluir
+            contas de usuário, desmarque isso.
+      required:
+      - email
+      - id
+      - is_active
+      - role
+      - username
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token de acesso JWT no header `Authorization`.
+servers:
+- url: http://localhost:8000
+  description: Desenvolvimento local (Docker Compose).
+tags:
+- name: auth
+  description: Login e usuário autenticado.
+- name: categories
+  description: 'Catalogo: categorias.'
+- name: health
+  description: Liveness e readiness da API.
+- name: items
+  description: 'Catalogo: itens.'
+- name: pagamento
+  description: Pagamento simulado do pedido.
+- name: pedidos
+  description: Criacao e consulta de pedidos.

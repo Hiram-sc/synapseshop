@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "22545c7b-18f0-4643-adca-90ed2e75d247",
-    "name": "API - Categories e Items",
-    "description": "Coleção da API Django do SynapseShop.\n\n**Ordem sugerida:** `Autenticacao (JWT)` -> `Autorizacao (401 vs 403)` -> `Paginacao e Filtros` -> `Categories` -> `Items`.\n\nAs requisições de `Autenticacao` guardam o token em `{{admin_token}}` e `{{user_token}}`; as de escrita usam `{{admin_token}}` no header `Authorization`.\n\n**Atenção ao throttling:** a pasta `Throttling (429)` esgota a janela de login (5/min por IP). Rode ela sozinha, ou espere ~60 segundos entre execuções - caso contrário o login já responde 429 antes mesmo de o teste rodar.",
+    "name": "SynapseShop API (REST)",
+    "description": "Coleção da API Django do SynapseShop.\n\n**Ordem sugerida:** `Saude e Documentacao` -> `Autenticacao (JWT)` -> `Autorizacao (401 vs 403)` -> `Paginacao e Filtros` -> `Categories` -> `Items` -> `Pedidos`.\n\nAs requisições de `Autenticacao` guardam o token em `{{admin_token}}` e `{{user_token}}`; as de escrita usam os tokens no header `Authorization`.\n\n**Atenção ao throttling:** a pasta `Throttling (429)` esgota a janela de login (5/min por IP). Rode ela sozinha, ou espere ~60 segundos entre execuções - caso contrário o login já responde 429 antes de o teste rodar.\n\n**Aula 13:** os endpoints de `Pedidos` têm idempotência por `idempotency_key` no corpo (não header); pagamento é simulado e só uma vez por pedido (409 no reuso). `Saude e Documentacao` cobre `/health`, `/health/pronto`, o contrato OpenAPI (`/api/schema/`) e as UI Swagger (`/api/docs/`) e ReDoc (`/api/redoc/`).\n\nContrato versionado em `docs/openapi.yaml` (regeneração: `python manage.py gerar_openapi`); lint: `spectral lint docs/openapi.yaml`.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
     "_exporter_id": "58481486",
     "_collection_link": "https://go.postman.co/collection/58481486-22545c7b-18f0-4643-adca-90ed2e75d247?source=collection_link"
@@ -52,9 +52,177 @@
       "key": "item_id",
       "value": "1",
       "type": "string"
+    },
+    {
+      "key": "pedido_id",
+      "value": "1",
+      "type": "string"
+    },
+    {
+      "key": "idempotency_key",
+      "value": "postman-aula13-1",
+      "type": "string"
     }
   ],
   "item": [
+    {
+      "name": "Saude e Documentacao",
+      "description": "Infraestrutura e contratos da Aula 13: liveness/readiness e as rotas do OpenAPI gerado (schema, Swagger UI e ReDoc).",
+      "item": [
+        {
+          "name": "GET /health - 200 (liveness)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200));",
+                  "pm.test('status ok', () => pm.expect(pm.response.json().status).to.eql('ok'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /health/pronto - 200 (readiness)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200 com tudo no ar', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('database ok', () => pm.expect(body.database).to.eql('ok'));",
+                  "pm.test('redis ok', () => pm.expect(body.redis).to.eql('ok'));",
+                  "pm.test('broker ok', () => pm.expect(body.broker).to.eql('ok'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health/pronto",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health",
+                "pronto"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/schema/ - contrato OpenAPI",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200));",
+                  "pm.test('e um documento OpenAPI', () => pm.expect(pm.response.text()).to.match(/openapi: 3/));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/schema/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "schema"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/docs/ - Swagger UI",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200));",
+                  "pm.test('carrega a Swagger UI', () => pm.expect(pm.response.text()).to.match(/swagger-ui/));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/docs/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "docs"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/redoc/ - ReDoc",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200));",
+                  "pm.test('carrega o ReDoc', () => pm.expect(pm.response.text()).to.match(/redoc/));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/redoc/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "redoc"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
     {
       "name": "Autenticacao (JWT)",
       "description": "Login e leitura do token. `POST /auth/login/` é pública e limitada a 5/min por IP; `GET /auth/me/` exige `Authorization: Bearer <token>`.",
@@ -1658,6 +1826,347 @@
                 "v1",
                 "items",
                 "1"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Pedidos (Aula 13)",
+      "description": "Fluxo de pedido com idempotência (`idempotency_key`) e pagamento simulado (uma vez por pedido). Rode na ordem para as variáveis `{{pedido_id}}` e `{{idempotency_key}}` estarem preenchidas.",
+      "item": [
+        {
+          "name": "POST /pedidos/ - criar (user) - 201/202/200",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 201 (novo), 202 (broker recusou) ou 200 (idempotente)', () => pm.expect([200, 201, 202]).to.include(pm.response.code));",
+                  "const body = pm.response.json();",
+                  "pm.test('devolve o pedido', () => pm.expect(body.pedido.id).to.be.above(0));",
+                  "pm.test('informa se o evento foi publicado', () => pm.expect(body.evento_publicado).to.be.a('boolean'));",
+                  "pm.collectionVariables.set('pedido_id', body.pedido.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{user_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"idempotency_key\": \"{{idempotency_key}}\",\n    \"itens\": [\n        {\n            \"item_id\": {{item_id}},\n            \"quantidade\": 2\n        }\n    ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/pedidos/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "pedidos"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST /pedidos/ - mesma idempotency_key - 200",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200 (nada foi recriado)', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('devolve o mesmo pedido', () => pm.expect(body.pedido.id).to.eql(Number(pm.collectionVariables.get('pedido_id'))));",
+                  "pm.test('explica a repeticacao', () => pm.expect(body.detalhe).to.match(/idempotency_key/));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{user_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"idempotency_key\": \"{{idempotency_key}}\",\n    \"itens\": [\n        {\n            \"item_id\": {{item_id}},\n            \"quantidade\": 2\n        }\n    ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/pedidos/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "pedidos"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST /pedidos/ - sem idempotency_key - 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 400', () => pm.response.to.have.status(400));",
+                  "pm.test('aponta o campo faltante', () => pm.expect(pm.response.json()).to.have.property('idempotency_key'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{user_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"itens\": [\n        {\n            \"item_id\": {{item_id}},\n            \"quantidade\": 1\n        }\n    ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/pedidos/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "pedidos"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /pedidos/{{pedido_id}} - dono user - 200",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('e o pedido do user', () => {",
+                  "    pm.expect(body.id).to.eql(Number(pm.collectionVariables.get('pedido_id')));",
+                  "    pm.expect(body.usuario).to.eql(pm.collectionVariables.get('user_username'));",
+                  "});",
+                  "pm.test('traz os itens congelados', () => pm.expect(body.itens.length).to.be.above(0));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{user_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/pedidos/{{pedido_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "pedidos",
+                "{{pedido_id}}"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /pedidos/99999 - inexistente - 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 404 (sem booleano de existencia)', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{user_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/pedidos/99999",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "pedidos",
+                "99999"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST /pedidos/{{pedido_id}}/pagamento/ - 201/202",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 201 (novo) ou 202 (broker recusou)', () => pm.expect([201, 202]).to.include(pm.response.code));",
+                  "const body = pm.response.json();",
+                  "pm.test('pagamento aprovado', () => pm.expect(body.pagamento.status).to.eql('APROVADO'));",
+                  "pm.test('vinculado ao pedido', () => pm.expect(body.pagamento.pedido).to.eql(Number(pm.collectionVariables.get('pedido_id'))));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{user_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"status\": \"APROVADO\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/pedidos/{{pedido_id}}/pagamento/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "pedidos",
+                "{{pedido_id}}",
+                "pagamento"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST /pedidos/{{pedido_id}}/pagamento/ - repetido - 409",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 409 (ja processado)', () => pm.response.to.have.status(409));",
+                  "const body = pm.response.json();",
+                  "pm.test('devolve o pagamento existente', () => pm.expect(body.pagamento.status).to.eql('APROVADO'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{user_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"status\": \"APROVADO\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/pedidos/{{pedido_id}}/pagamento/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "pedidos",
+                "{{pedido_id}}",
+                "pagamento"
               ]
             }
           },
