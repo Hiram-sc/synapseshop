@@ -167,3 +167,72 @@ class PagamentoSerializer(serializers.ModelSerializer):
         model = Pagamento
         fields = ["id", "pedido", "status", "created_at"]
         read_only_fields = fields
+
+
+# ---------------------------------------------------------------------------
+# Aula 13 - serializers usados apenas para descrever o contrato OpenAPI
+# ---------------------------------------------------------------------------
+# Nao participam do fluxo de request/response: existem para o drf-spectacular
+# documentar as respostas compostas (que nao sao ModelSerializer puros) e o
+# formato padrao de erro da API.
+
+
+class ErrorSerializer(serializers.Serializer):
+    """Formato dos erros simples da API (`detail`).
+
+    Erros de validacao (HTTP 400) usam o formato do DRF: um mapa
+    `campo -> lista de mensagens`, descrito separadamente.
+    """
+
+    detail = serializers.CharField(help_text="Mensagem legível do erro.")
+    code = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Código estável opcional para tratamento pelo cliente.",
+    )
+
+
+class LoginResponseSerializer(serializers.Serializer):
+    """Resposta do `POST /api/v1/auth/login/`."""
+
+    access = serializers.CharField(help_text="Token JWT de acesso.")
+    token_type = serializers.CharField(help_text="Tipo do token (sempre `Bearer`).")
+    expires_in = serializers.IntegerField(
+        help_text="Validade do token em segundos."
+    )
+    user = UserSerializer(help_text="Usuário autenticado.")
+
+
+class PedidoCriadoResponseSerializer(serializers.Serializer):
+    """Resposta do `POST /api/v1/pedidos/` (201, 200 e 202)."""
+
+    pedido = PedidoSerializer(help_text="Pedido persistido.")
+    evento_publicado = serializers.BooleanField(
+        help_text="`true` quando o broker confirmou a publicação do evento."
+    )
+    detalhe = serializers.CharField(
+        required=False,
+        help_text="Explica por que o evento não foi publicado (200/202).",
+    )
+
+
+class PagamentoResponseSerializer(serializers.Serializer):
+    """Resposta do `POST /api/v1/pedidos/{id}/pagamento/` (201 e 202)."""
+
+    pagamento = PagamentoSerializer(help_text="Pagamento persistido.")
+    pedido = PedidoSerializer(help_text="Pedido atualizado.")
+    evento_publicado = serializers.BooleanField(
+        help_text="`true` quando o broker confirmou a publicação do evento."
+    )
+    detalhe = serializers.CharField(
+        required=False,
+        help_text="Explica por que o evento não foi publicado (202).",
+    )
+
+
+class PagamentoJaProcessadoResponseSerializer(serializers.Serializer):
+    """Resposta `409` do pagamento já processado."""
+
+    detail = serializers.CharField(help_text="Mensagem do conflito.")
+    pagamento = PagamentoSerializer(help_text="Pagamento já existente.")
+    pedido = PedidoSerializer(help_text="Pedido associado.")

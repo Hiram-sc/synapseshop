@@ -1,6 +1,13 @@
 from django.db import transaction
 from django.http import JsonResponse
 from django_filters.rest_framework import DjangoFilterBackend
+from drf_spectacular.utils import (
+    OpenApiParameter,
+    OpenApiResponse,
+    OpenApiTypes,
+    extend_schema,
+    extend_schema_view,
+)
 from rest_framework import filters, mixins, viewsets
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.generics import GenericAPIView
@@ -13,10 +20,15 @@ from api.pagination import CatalogoPagination
 from api.permissions import DonoOuAdmin, ReadOnlyOrIsAdmin
 from api.serializers import (
     CategorySerializer,
+    ErrorSerializer,
     ItemSerializer,
+    LoginResponseSerializer,
     LoginSerializer,
     PagamentoCreateSerializer,
+    PagamentoJaProcessadoResponseSerializer,
+    PagamentoResponseSerializer,
     PagamentoSerializer,
+    PedidoCriadoResponseSerializer,
     PedidoCreateSerializer,
     PedidoSerializer,
     UserSerializer,
@@ -65,6 +77,31 @@ class LoginView(APIView):
     throttle_classes = [LoginRateThrottle]
     throttle_scope = "login"
 
+    @extend_schema(
+        tags=["auth"],
+        summary="Autentica credenciais e emite um token JWT",
+        request=LoginSerializer,
+        responses={
+            200: LoginResponseSerializer,
+            400: OpenApiResponse(
+                response=OpenApiTypes.OBJECT,
+                description="Corpo inválido: `username` e/ou `password` ausentes.",
+            ),
+            401: OpenApiResponse(
+                response=ErrorSerializer,
+                description="Usuário ou senha inválidos.",
+            ),
+            403: OpenApiResponse(
+                response=ErrorSerializer,
+                description="Conta desativada.",
+            ),
+            429: OpenApiResponse(
+                response=ErrorSerializer,
+                description="Limite de tentativas de login excedido (5/min por IP).",
+            ),
+        },
+        auth=[],
+    )
     def post(self, request):
         serializer = self.serializer_class(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -109,6 +146,12 @@ class MeView(GenericAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = UserSerializer
 
+    @extend_schema(
+        tags=["auth"],
+        summary="Usuário do token enviado",
+        responses={200: UserSerializer},
+        auth=[{"bearerAuth": []}],
+    )
     def get(self, request):
         return Response(self.serializer_class(request.user).data)
 
@@ -123,6 +166,38 @@ def _ids_dos_itens(categoria: Category) -> list:
     return list(categoria.items.values_list("id", flat=True))
 
 
+@extend_schema_view(
+    list=extend_schema(
+        tags=["categories"],
+        summary="Lista categorias (paginado)",
+        auth=[],
+    ),
+    retrieve=extend_schema(
+        tags=["categories"],
+        summary="Detalhe da categoria",
+        auth=[],
+    ),
+    create=extend_schema(
+        tags=["categories"],
+        summary="Cria categoria (admin)",
+        auth=[{"bearerAuth": []}],
+    ),
+    update=extend_schema(
+        tags=["categories"],
+        summary="Atualiza categoria (admin)",
+        auth=[{"bearerAuth": []}],
+    ),
+    partial_update=extend_schema(
+        tags=["categories"],
+        summary="Atualiza parcialmente a categoria (admin)",
+        auth=[{"bearerAuth": []}],
+    ),
+    destroy=extend_schema(
+        tags=["categories"],
+        summary="Remove categoria (admin)",
+        auth=[{"bearerAuth": []}],
+    ),
+)
 class CategoryViewSet(viewsets.ModelViewSet):
     """CRUD de categorias.
 
@@ -169,6 +244,60 @@ class CategoryViewSet(viewsets.ModelViewSet):
         )
 
 
+@extend_schema_view(
+    list=extend_schema(
+        tags=["items"],
+        summary="Lista itens (paginado, cache-aside)",
+        description=(
+            "A resposta traz o header `X-Cache` com `HIT`, `MISS` ou `BYPASS`. "
+            "Filtros: `?search=`, `?is_active=`, `?category=`; ordenação por "
+            "`?ordering=`."
+        ),
+        parameters=[
+            OpenApiParameter(
+                name="category",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Filtra os itens da categoria com este id.",
+            ),
+            OpenApiParameter(
+                name="is_active",
+                type=OpenApiTypes.BOOL,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Filtra por `is_active` (`true`/`false`).",
+            ),
+        ],
+        auth=[],
+    ),
+    retrieve=extend_schema(
+        tags=["items"],
+        summary="Detalhe do item (cache-aside)",
+        description="A resposta traz o header `X-Cache` com `HIT`, `MISS` ou `BYPASS`.",
+        auth=[],
+    ),
+    create=extend_schema(
+        tags=["items"],
+        summary="Cria item (admin)",
+        auth=[{"bearerAuth": []}],
+    ),
+    update=extend_schema(
+        tags=["items"],
+        summary="Atualiza item (admin)",
+        auth=[{"bearerAuth": []}],
+    ),
+    partial_update=extend_schema(
+        tags=["items"],
+        summary="Atualiza parcialmente o item (admin)",
+        auth=[{"bearerAuth": []}],
+    ),
+    destroy=extend_schema(
+        tags=["items"],
+        summary="Remove item (admin)",
+        auth=[{"bearerAuth": []}],
+    ),
+)
 class ItemViewSet(viewsets.ModelViewSet):
     """CRUD de itens do catálogo, com cache-aside nas leituras.
 
@@ -285,6 +414,45 @@ class ItemViewSet(viewsets.ModelViewSet):
         events.publicar(events.ITEM_REMOVIDO, item_id=item_id)
 
 
+@extend_schema_view(
+    retrieve=extend_schema(
+        tags=["pedidos"],
+        summary="Detalhe do pedido",
+        description="A resposta traz o header `X-Cache` com `HIT`, `MISS` ou `BYPASS`.",
+        responses={
+            200: PedidoSerializer,
+            404: OpenApiResponse(
+                response=ErrorSerializer,
+                description="Pedido inexistente ou de outro usuário.",
+            ),
+        },
+        auth=[{"bearerAuth": []}],
+    ),
+    create=extend_schema(
+        tags=["pedidos"],
+        summary="Cria pedido e publica o evento PedidoCriado",
+        request=PedidoCreateSerializer,
+        responses={
+            201: OpenApiResponse(
+                response=PedidoCriadoResponseSerializer,
+                description="Pedido criado e evento confirmado pelo broker (`evento_publicado: true`).",
+            ),
+            200: OpenApiResponse(
+                response=PedidoCriadoResponseSerializer,
+                description="Idempotência: já existia pedido para esta `idempotency_key`.",
+            ),
+            202: OpenApiResponse(
+                response=PedidoCriadoResponseSerializer,
+                description="Pedido persistido, mas o broker recusou a publicação do evento.",
+            ),
+            400: OpenApiResponse(
+                response=OpenApiTypes.OBJECT,
+                description="Payload inválido (`itens`/`idempotency_key`).",
+            ),
+        },
+        auth=[{"bearerAuth": []}],
+    ),
+)
 class PedidoViewSet(mixins.RetrieveModelMixin, viewsets.GenericViewSet):
     """Criação e consulta de pedidos - o produtor da Aula 9.
 
@@ -438,6 +606,42 @@ class PagamentoView(APIView):
         self.check_object_permissions(self.request, pedido)
         return pedido
 
+    @extend_schema(
+        tags=["pagamento"],
+        summary="Processa o pagamento simulado do pedido",
+        request=PagamentoCreateSerializer,
+        responses={
+            201: OpenApiResponse(
+                response=PagamentoResponseSerializer,
+                description="Pagamento persistido e evento confirmado pelo broker (`evento_publicado: true`).",
+            ),
+            202: OpenApiResponse(
+                response=PagamentoResponseSerializer,
+                description="Pagamento persistido, mas o broker recusou a publicação do evento.",
+            ),
+            400: OpenApiResponse(
+                response=OpenApiTypes.OBJECT,
+                description="`status` inválido (aceitos: `APROVADO`, `RECUSADO`).",
+            ),
+            404: OpenApiResponse(
+                response=ErrorSerializer,
+                description="Pedido inexistente ou de outro usuário.",
+            ),
+            409: OpenApiResponse(
+                response=PagamentoJaProcessadoResponseSerializer,
+                description="O pedido já tinha pagamento; nada foi recriado nem republicado.",
+            ),
+        },
+        parameters=[
+            OpenApiParameter(
+                name="pedido_id",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.PATH,
+                description="Id do pedido a pagar.",
+            ),
+        ],
+        auth=[{"bearerAuth": []}],
+    )
     def post(self, request, pedido_id):
         entrada = PagamentoCreateSerializer(data=request.data)
         entrada.is_valid(raise_exception=True)
