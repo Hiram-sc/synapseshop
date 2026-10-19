@@ -32,6 +32,80 @@ info:
   license:
     name: Propriedade do curso (uso acadêmico) - sem licença pública.
 paths:
+  /api/v1/assist/:
+    post:
+      operationId: v1_assist_create
+      description: Envia logs (string ou lista) ao provedor de LLM para gerar um resumo
+        (`summarize`) ou uma explicação (`explain`). Os dados sensíveis (segredos
+        e PII) sofrem redaction antes do envio. Responde 200 com `answer`/`meta`;
+        502 para resposta inválida do provedor; 503 para circuito aberto, limite/erro
+        do provedor ou serviço não configurado; 504 para timeout.
+      summary: Assistente de IA para resumo/explicação de logs
+      tags:
+      - assist
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssistRequestRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AssistRequestRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AssistRequestRequest'
+        required: true
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssistResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Corpo inválido.
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Autenticação ausente ou token inválido/expirado.
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Autenticado, mas sem permissão para a operação.
+        '429':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Limite de requisições excedido. Consulte o header Retry-After.
+        '502':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Provedor de LLM retornou resposta inválida.
+        '503':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Serviço de IA indisponível (circuito aberto ou não configurado).
+        '504':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Timeout na chamada ao provedor de LLM.
   /api/v1/auth/login/:
     post:
       operationId: v1_auth_login_create
@@ -1095,6 +1169,66 @@ paths:
                     type: string
 components:
   schemas:
+    AssistMeta:
+      type: object
+      properties:
+        tokens_prompt:
+          type: integer
+        tokens_output:
+          type: integer
+      required:
+      - tokens_output
+      - tokens_prompt
+    AssistRequestRequest:
+      type: object
+      description: 'Corpo do `POST /api/v1/assist` (Aula 14).
+
+
+        `logs` aceita **string** (um bloco de texto) ou **array** (lista de linhas,
+
+        possivelmente dicts estruturados) conforme o contrato da spec. O
+
+        `JSONField` entrega o valor já desserializado e `validate_logs` restringe
+        a
+
+        esses dois formatos; a normalização para texto fica em `services.prompts`.'
+      properties:
+        mode:
+          allOf:
+          - $ref: '#/components/schemas/ModeEnum'
+          description: 'Modo da assistente de IA: `summarize` ou `explain`.
+
+
+            * `summarize` - summarize
+
+            * `explain` - explain'
+        logs:
+          description: 'Logs a analisar: string única ou lista de linhas (strings
+            ou objetos com `timestamp`/`level`/`message`).'
+        temperature:
+          type: number
+          format: double
+          maximum: 1.0
+          minimum: 0.0
+          default: 0.2
+        max_tokens:
+          type: integer
+          maximum: 4096
+          minimum: 1
+          default: 256
+      required:
+      - logs
+      - mode
+    AssistResponse:
+      type: object
+      properties:
+        answer:
+          type: string
+        meta:
+          $ref: '#/components/schemas/AssistMeta'
+      required:
+      - answer
+      - meta
     Category:
       type: object
       properties:
@@ -1254,6 +1388,14 @@ components:
       - expires_in
       - token_type
       - user
+    ModeEnum:
+      enum:
+      - summarize
+      - explain
+      type: string
+      description: '* `summarize` - summarize
+
+        * `explain` - explain'
     Pagamento:
       type: object
       description: Leitura do pagamento; `pedido` sai como id (já endereçável na URL).
@@ -1607,6 +1749,8 @@ servers:
 - url: http://localhost:8000
   description: Desenvolvimento local (Docker Compose).
 tags:
+- name: assist
+  description: Assistente de IA (Aula 14).
 - name: auth
   description: Login e usuário autenticado.
 - name: categories

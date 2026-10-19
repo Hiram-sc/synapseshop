@@ -16,7 +16,9 @@ separado e segue intocado pela API principal.
 | Itens | `/api/v1/items/` | leitura pública, escrita `admin` |
 | Pedidos | `POST /api/v1/pedidos/`, `GET /api/v1/pedidos/{id}/` | autenticado (dono ou `admin`) |
 | Pagamento | `POST /api/v1/pedidos/{id}/pagamento/` | autenticado (dono ou `admin`) |
+| Assistente de IA | `POST /api/v1/assist/` | autenticado |
 | Health check | `/health`, `/health/pronto` | público |
+| Documentação | `/api/schema/`, `/api/docs/`, `/api/redoc/` | público |
 
 Leitura do catálogo é pública e **cacheada em Redis**; escrita exige Bearer token
 com papel `admin` e **invalida o cache** do que mudou. A criação de pedido
@@ -38,12 +40,12 @@ ganhou um **readiness** (`/health/pronto`) que atesta PostgreSQL, Redis e broker
 ## 🛠️ Tecnologias
 
 - Python 3.12
-- Django 5.2 / Django REST Framework 3.16
+- Django 5.2 / Django REST Framework 3.18
 - PostgreSQL 16
 - Redis 7 (`django-redis`)
 - Apache Kafka 3.9 (KRaft, `confluent-kafka`) — broker padrão
 - RabbitMQ 3.13 (`pika`) — broker alternativo preservado
-- SimpleJWT, django-filter, Docker Compose
+- SimpleJWT, django-filter, **drf-spectacular** (OpenAPI/Swagger/ReDoc), Docker Compose
 
 ## 🧭 Como executar
 
@@ -53,7 +55,9 @@ docker compose exec api python manage.py migrate
 docker compose exec api python manage.py create_users
 ```
 
-A API fica em `http://localhost:8000`, com Browsable API e `/docs`. O broker
+A API fica em `http://localhost:8000`, com Browsable API e documentação
+interativa: **Swagger UI** em `/api/docs/`, **ReDoc** em `/api/redoc/` e o
+**contrato OpenAPI** em `/api/schema/`. O broker
 padrão é o Kafka (KRaft single-node; porta do host `29092`), o RabbitMQ
 Management continua em `http://localhost:15672` (usuário/senha `synapseshop`)
 para inspeção do broker alternativo, e os consumidores rodam nos serviços
@@ -215,13 +219,147 @@ MENSAGERIA_BROKER=kafka docker compose up -d api pedido-worker    # volta ao pad
 Detalhes, métricas e evidências: `docs/AULA_10_MENSAGERIA_APACHE_KAFKA.md`;
 a alternativa RabbitMQ está documentada em `docs/AULA_09_MENSAGERIA_ASSINCRONA.md`.
 
-## 🧪 Testes
+## 📜 Documentação da API (Aula 13)
 
-118 testes contra PostgreSQL e Redis reais:
+O contrato **OpenAPI 3.0.3 é gerado do código** (serializers/views) com
+`drf-spectacular` e versionado em `docs/openapi.yaml`:
 
 ```bash
-docker compose exec -T api python manage.py test -v 1
+docker compose exec -T api python manage.py gerar_openapi   # regenera docs/openapi.yaml
+npx --yes @stoplight/spectral-cli lint docs/openapi.yaml    # validação estática (0 problemas)
 ```
+
+| Rota | O que é |
+|---|---|
+| `/api/schema/` | contrato OpenAPI (YAML), gerado on-the-fly |
+| `/api/docs/` | **Swagger UI** (navegar e tentar as chamadas) |
+| `/api/redoc/` | **ReDoc** (leitura) |
+
+- **Convenções documentadas:** paginação `page`/`limit` (teto 100) com envelope
+  `count/next/previous/results`; filtros `?search=`, `?is_active=`,
+  `?category=`; ordenação `?ordering=`; idempotência por `idempotency_key` no
+  **corpo** do `POST /pedidos/`.
+- **Divergências assumidas da spec** (sem mudança de comportamento):
+  `Idempotency-Key` header → campo `idempotency_key`; `X-Trace-Id` não
+  aplicado; paginação por cursor inexistente; filtro `?status=` inexistente;
+  `sort=` → `ordering=`; erros no formato DRF (não RFC 7807). Registradas em
+  `docs/AULA_13_OPENAPI_SWAGGER_POSTMAN.md` e `docs/INTEGRADOR_EXTERNO.md`.
+- **Postman/Insomnia:** 52 requisições em `docs/postman/` + environment
+  `SynapseShop.postman_environment.json`.
+- **Erros padrão:** 400 validação (mapa por campo), 401/403 `{"detail"}`,
+  404 `{"detail"}`, 409 idempotência/duplicidade, 429 com `Retry-After`.
+
+## 🤖 Assistente de IA e `llm_service` (Aula 14)
+
+A camada de IA é um serviço isolado (`services/llm_service.py`) exposto pelo
+endpoint autenticado `POST /api/v1/assist/`, que **resume** (`summarize`) ou
+**explica** (`explain`) logs. O provedor é acessível por HTTP/JSON no formato
+OpenAI (`/chat/completions`); o padrão é o DeepSeek, trocável por
+`LLM_API_BASE_URL`/`LLM_MODEL`.
+
+```bash
+curl -X POST http://localhost:8000/api/v1/assist/ \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{"mode":"summarize","logs":["2026-01-02 ERROR falha ao gravar pedido",
+       "2026-01-02 WARN retry em 2s"],"temperature":0.1,"max_tokens":256}'
+```
+
+Contrato do corpo: `mode` (`summarize|explain`), `logs` (**string** ou
+**array** de linhas), `temperature` (`0.0-1.0`, padrão `0.2`) e `max_tokens`
+(`1-4096`, padrão `256`). A resposta segue a estrutura da spec:
+
+```json
+{ "answer": "...", "meta": { "tokens_prompt": 5, "tokens_output": 7 } }
+```
+
+### Arquitetura do serviço
+
+`LLMService` monta o prompt, aplica redaction/truncamento e chama o provedor
+com resiliência:
+
+- **Timeout** por chamada (`LLM_TIMEOUT_S`, padrão 5s).
+- **Retry** com **backoff exponencial + jitter** apenas para falhas
+  transientes (`408/429/5xx`); erros de cliente (`400/401/403`) não repetem.
+- **Circuit breaker** com os três estados `closed`/`open`/`half-open`
+  (`CircuitBreaker`): ao abrir, bloqueia novas chamadas por
+  `LLM_CIRCUITO_RESET_S`; vencido o intervalo entra em `half-open` e libera
+  **uma** chamada-sonda — sucesso fecha, falha reabre.
+- **Instância compartilhada** (`obter_llm_service()`): o breaker é o **mesmo
+  entre requisições**; sem isso cada `POST` criaria um breaker zerado e a
+  proteção nunca dispararia.
+- **Telemetria** (`TelemetriaLLM`) por chamada: latência, tokens de
+  prompt/saída, custo estimado (`LLM_PRECO_ENTRADA_POR_1K`/
+  `LLM_PRECO_SAIDA_POR_1K`), tentativas e sucesso. É registrada em log
+  estruturado (`logger "llm_service"`), **sem** conteúdo de log nem segredos.
+
+Mapeamento de falhas do endpoint: timeout → **504**; resposta inválida do
+provedor → **502**; `429` do provedor e **circuito aberto/sem configuração** →
+**503**; sem token → **401**; corpo inválido → **400**.
+
+### Templates de prompt
+
+`services/prompts.py` isola os templates (`PromptTemplates`) — um *system* e um
+*user* por modo — e `montar_prompt(mode, logs)` devolve as mensagens no formato
+do provedor. `serializar_logs()` normaliza `string`/`array` (inclusive dicts com
+`timestamp/level/message`) num único bloco de texto antes do envio.
+
+### Privacidade (LGPD/RGPD) e redaction
+
+`services/redaction.py` roda **antes** do envio ao provedor
+(`LLM_REDACTAR_ENVIO=true`) e no que for registrado em log:
+
+- **Segredos** por chave (`password`, `token`, `api_key`, `secret`, `senha`,
+  `private_key`, …) e por padrão textual (`senha=...`, `Bearer ...`, JWT).
+- **PII** por regex: CPF, CNPJ, cartão de crédito, e-mail, telefone, CEP.
+- **Truncamento** do bloco de logs a `LLM_MAX_LOGS_CARACTERES` (padrão 2000).
+
+O que sai do `LLMService.montar_logs()` — já redigido e truncado — é o único
+conteúdo enviado ao provedor.
+
+### Limites configuráveis
+
+| Variável | Padrão | Papel |
+|---|---|---|
+| `LLM_API_KEY` | *(vazio)* | credencial do provedor (nunca versionada) |
+| `LLM_API_BASE_URL` | `https://api.deepseek.com/v1` | base do provedor OpenAI-compatível |
+| `LLM_MODEL` | `deepseek-chat` | modelo |
+| `LLM_TIMEOUT_S` | `5` | timeout por chamada |
+| `LLM_MAX_TENTATIVAS` | `3` | tentativas de retry |
+| `LLM_BACKOFF_BASE_S` / `LLM_BACKOFF_MAX_S` | `0.1` / `1.0` | base e teto do backoff |
+| `LLM_CIRCUITO_LIMITE_FALHAS` / `LLM_CIRCUITO_RESET_S` | `5` / `60` | limiar e janela do breaker |
+| `LLM_MAX_TOKENS_LIMITE` | `1024` | teto de `max_tokens` |
+| `LLM_MAX_LOGS_CARACTERES` | `2000` | truncamento dos logs no envio |
+| `LLM_REDACTAR_ENVIO` | `true` | liga/desliga a redaction no envio |
+| `LLM_PRECO_ENTRADA_POR_1K` / `LLM_PRECO_SAIDA_POR_1K` | `0.001` / `0.002` | estimativa de custo |
+
+Sem `LLM_API_KEY`, o endpoint responde **503** (serviço não configurado) e
+registra o aviso; nenhuma chamada de rede é feita. Nos testes o provedor é
+sempre **mockado** — nenhuma credencial real entra no repositório.
+
+### Melhorias futuras e pendências (registro de issues)
+
+Não há *issue tracker* configurado neste repositório (sem `.github/` e sem
+remote), então as pendências ficam registradas aqui como backlog:
+
+- **Cache de respostas** do assistente (chave por `mode`+hash dos logs
+  redigidos) para reduzir custo/latência de chamadas repetidas.
+- **Guardrails adicionais**: limites por usuário (rate limit dedicado) no
+  `/assist/`, filtro de conteúdo e validação de saída.
+- **Métricas Prometheus** para telemetria (hoje só em log estruturado).
+- **Streaming** da resposta do provedor.
+- Evolução de RAG/embeddings fora do escopo desta aula.
+
+## 🧪 Testes
+
+399 testes contra PostgreSQL e Redis reais:
+
+```bash
+docker compose exec -T api pytest
+```
+
+> O `manage.py test` **não** coleta os testes do projeto (eles usam o estilo
+> função do pytest); o executor correto é o `pytest` acima, com cobertura em
+> `pytest.ini`/`.coveragerc`.
 
 ## 📁 Estrutura
 
@@ -229,8 +367,11 @@ docker compose exec -T api python manage.py test -v 1
 aula2/
 ├── api/                    views, serializers, permissões, throttling, paginação
 │   ├── views.py            cache-aside nas leituras (itens e pedido), eventos nas
-│   │                       escritas, PedidoViewSet e PagamentoView (Aula 11)
-│   └── health.py           readiness /health/pronto (PostgreSQL, Redis, broker)
+│   │                       escritas, PedidoViewSet e PagamentoView (Aula 11),
+│   │                       AssistView (Aula 14); anotações @extend_schema (Aula 13)
+│   ├── openapi.py          hook do contrato: erros padrão e /health* (Aula 13)
+│   ├── health.py           readiness /health/pronto (PostgreSQL, Redis, broker)
+│   └── management/commands/gerar_openapi.py   gera docs/openapi.yaml (Aula 13)
 ├── config/settings.py      DRF, JWT, CACHES no Redis, TTLs do cache
 ├── repositories/           models, services, commands, migrations
 │   ├── models.py               Pedido, PedidoItem, Pagamento, Notificacao, EventoProcessado
@@ -241,13 +382,16 @@ aula2/
 │       ├── pedido_worker.py    consumidor do broker ativo (Kafka ou RabbitMQ)
 │       ├── notificacao_worker.py  consumidor do PagamentoProcessado (Aula 11)
 │       └── limpar_eventos_processados.py  limpeza de EventoProcessado
-├── services/               cache, events, auth, user, pedido, pagamento, notificação
+├── services/               cache, events, auth, user, pedido, pagamento, notificação, llm
 │   ├── cache.py            chaves, geração, TTL, fail-open, métricas (itens e pedido)
 │   ├── events.py           barramento in-process
 │   ├── cache_invalidation.py  regras de invalidação
 │   ├── pedido_service.py   regras do pedido (total no servidor)
 │   ├── pagamento_service.py    um pagamento por pedido; RECUSADO cancela (Aula 11)
 │   ├── notificacao_service.py  efeito do PagamentoProcessado no banco (Aula 11)
+│   ├── llm_service.py      LLMService, circuit breaker e telemetria (Aula 14)
+│   ├── prompts.py          templates e montagem do prompt (Aula 14)
+│   ├── redaction.py        ocultação de segredos/PII e truncamento (Aula 14)
 │   └── mensageria/         envelope, idempotência, config e:
 │       ├── facade.py           seleção do broker (MENSAGERIA_BROKER) e publicar_evento
 │       ├── produtor.py         produtor RabbitMQ (broker alternativo)
@@ -261,17 +405,23 @@ aula2/
 │   ├── smoke_test_mensageria_kafka.py    validação pontual do fluxo Kafka
 │   ├── smoke_test_fluxo_pagamento.py     fluxo pagamento+notificação+cache+health
 │   └── benchmark_mensageria_kafka.py     latência, throughput e trade-off do dedupe
-├── tests/                  suíte Django (118 testes)
+├── tests/                  suíte Django (399 testes)
 ├── docs/                   documentação técnica do projeto
 │   ├── AULA_06_PERSISTENCIA_POSTGRESQL.md
 │   ├── AULA_07_JWT_ROLES_THROTTLING.md
 │   ├── AULA_08_CACHE_ASIDE_REDIS.md
 │   ├── AULA_09_MENSAGERIA_ASSINCRONA.md
-│   └── AULA_10_MENSAGERIA_APACHE_KAFKA.md
+│   ├── AULA_10_MENSAGERIA_APACHE_KAFKA.md
+│   ├── AULA_13_OPENAPI_SWAGGER_POSTMAN.md     documentação da API (Aula 13)
+│   ├── INTEGRADOR_EXTERNO.md                  guia de quem consome a API
+│   ├── openapi.yaml                           contrato OpenAPI versionado
+│   └── postman/                               coleção (52 requests) + environment
 ├── inventory/              microsserviço FastAPI separado (intocado)
 ├── docker-compose.yml      db, cache, rabbitmq, kafka, api, pedido-worker, notificacao-worker
 ├── Dockerfile
 ├── .env.example            variáveis de ambiente sem segredos
+├── .spectral.yaml          regras de lint do contrato OpenAPI (Aula 13)
+├── CHANGELOG.md            histórico de versões
 └── requirements.txt
 ```
 
@@ -284,4 +434,8 @@ aula2/
 | `docs/AULA_08_CACHE_ASIDE_REDIS.md` | cache-aside com Redis, invalidação, fail-open |
 | `docs/AULA_09_MENSAGERIA_ASSINCRONA.md` | RabbitMQ, evento `PedidoCriado`, idempotência, retry/backoff e DLQ |
 | `docs/AULA_10_MENSAGERIA_APACHE_KAFKA.md` | Apache Kafka (KRaft), partições/ordem, commit por offset, retenção, DLQ; RabbitMQ preservado |
+| `docs/AULA_13_OPENAPI_SWAGGER_POSTMAN.md` | OpenAPI gerado, Swagger UI/ReDoc, Spectral, Postman, erros padrão, divergências |
+| `docs/INTEGRADOR_EXTERNO.md` | guia do integrador: auth, pedido idempotente, pagamento, erros, limites |
+| `docs/openapi.yaml` | contrato OpenAPI 3.0.3 versionado (gerado por `gerar_openapi`) |
+| `CHANGELOG.md` | histórico de versões |
 
