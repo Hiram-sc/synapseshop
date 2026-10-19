@@ -19,6 +19,8 @@ from rest_framework_simplejwt.settings import api_settings as jwt_settings
 from api.pagination import CatalogoPagination
 from api.permissions import DonoOuAdmin, ReadOnlyOrIsAdmin
 from api.serializers import (
+    AssistRequestSerializer,
+    AssistResponseSerializer,
     CategorySerializer,
     ErrorSerializer,
     ItemSerializer,
@@ -38,6 +40,7 @@ from repositories.models import Category, Item, Pedido, Role
 from services import cache as cache_service
 from services import events
 from services.auth_service import AuthService, InactiveUser, InvalidCredentials
+from services.llm_service import CircuitBreakerError, obter_llm_service
 from services.mensageria import facade
 from services.mensageria.envelope import (
     montar_pagamento_processado,
@@ -45,6 +48,7 @@ from services.mensageria.envelope import (
 )
 from services.pagamento_service import PagamentoJaProcessado, PagamentoService
 from services.pedido_service import PedidoInvalido, PedidoService
+from services.redaction import redigir_dicionario, truncar_texto
 
 #: header que diz de onde veio a resposta do catálogo
 HEADER_CACHE = "X-Cache"
@@ -687,3 +691,106 @@ class PagamentoView(APIView):
             )
             return Response(corpo, status=202)
         return Response(corpo, status=201)
+
+
+class AssistView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        tags=["assist"],
+        summary="Assistente de IA para resumo/explicação de logs",
+        description=(
+            "Envia logs (string ou lista) ao provedor de LLM para gerar um "
+            "resumo (`summarize`) ou uma explicação (`explain`). Os dados "
+            "sensíveis (segredos e PII) sofrem redaction antes do envio. "
+            "Responde 200 com `answer`/`meta`; 502 para resposta inválida do "
+            "provedor; 503 para circuito aberto, limite/erro do provedor ou "
+            "serviço não configurado; 504 para timeout."
+        ),
+        request=AssistRequestSerializer,
+        responses={
+            200: AssistResponseSerializer,
+            400: OpenApiResponse(
+                response=ErrorSerializer,
+                description="Corpo inválido.",
+            ),
+            401: OpenApiResponse(
+                response=ErrorSerializer,
+                description="Autenticação ausente ou token inválido/expirado.",
+            ),
+            403: OpenApiResponse(
+                response=ErrorSerializer,
+                description="Autenticado, mas sem permissão para a operação.",
+            ),
+            429: OpenApiResponse(
+                response=ErrorSerializer,
+                description="Limite de requisições excedido. Consulte o header Retry-After.",
+            ),
+            502: OpenApiResponse(
+                response=ErrorSerializer,
+                description="Provedor de LLM retornou resposta inválida.",
+            ),
+            503: OpenApiResponse(
+                response=ErrorSerializer,
+                description="Serviço de IA indisponível (circuito aberto ou não configurado).",
+            ),
+            504: OpenApiResponse(
+                response=ErrorSerializer,
+                description="Timeout na chamada ao provedor de LLM.",
+            ),
+        },
+        auth=[{"bearerAuth": []}],
+    )
+    def post(self, request):
+        serializer = AssistRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        dados = serializer.validated_data
+        mode = dados["mode"]
+        logs = dados["logs"]
+        temperature = dados.get("temperature", 0.2)
+        max_tokens = dados.get("max_tokens", 256)
+
+        llm = obter_llm_service()
+        if not getattr(llm, "api_key", ""):
+            import logging
+
+            logger = logging.getLogger("llm_service")
+            logger.warning(
+                "assist_chamada_sem_api_key",
+                extra={"dados": truncar_texto(str(redigir_dicionario({"mode": mode})), 200)},
+            )
+
+        try:
+            resultado = llm.assinar_e_resumir(mode, logs, temperature=temperature, max_tokens=max_tokens)
+        except TimeoutError:
+            return Response({"detail": "Timeout na chamada ao provedor de LLM."}, status=504)
+        except CircuitBreakerError:
+            return Response({"detail": "Serviço de IA indisponível no momento."}, status=503)
+        except ValueError:
+            return Response({"detail": "Resposta inválida do provedor de LLM."}, status=502)
+        except Exception as exc:
+            msg = str(exc)
+            if "http_429" in msg:
+                return Response({"detail": "Limite de requisições do provedor de IA excedido."}, status=503)
+            if "http_503" in msg or "http_502" in msg or "http_500" in msg:
+                return Response({"detail": "Provedor de LLM indisponível."}, status=502)
+            if "http_401" in msg or "http_403" in msg:
+                return Response({"detail": "Configuração do provedor de IA inválida."}, status=503)
+            if "http_400" in msg:
+                return Response({"detail": "Requisição inválida ao provedor de LLM."}, status=502)
+            return Response({"detail": "Erro interno no serviço de IA."}, status=503)
+
+        meta_res = resultado.get("meta") or {}
+        answer = resultado.get("answer") or ""
+
+        return Response(
+            {
+                "answer": answer,
+                "meta": {
+                    "tokens_prompt": meta_res.get("tokens_prompt", 0),
+                    "tokens_output": meta_res.get("tokens_output", 0),
+                },
+            },
+            status=200,
+        )

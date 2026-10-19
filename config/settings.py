@@ -165,6 +165,7 @@ SPECTACULAR_SETTINGS = {
         }
     },
 "TAGS": [
+        {"name": "assist", "description": "Assistente de IA (Aula 14)."},
         {"name": "auth", "description": "Login e usuário autenticado."},
         {"name": "categories", "description": "Catalogo: categorias."},
         {"name": "health", "description": "Liveness e readiness da API."},
@@ -274,6 +275,31 @@ DJANGO_REDIS_LOG_IGNORED_EXCEPTIONS = (
     os.environ.get("CACHE_LOG_IGNORED_EXCEPTIONS", "false").lower()
     in ("1", "true", "yes")
 )
+
+# ---------------------------------------------------------------------------
+# Aula 14 - Assistente de IA (LLM service)
+# ---------------------------------------------------------------------------
+LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
+LLM_API_BASE_URL = os.environ.get(
+    "LLM_API_BASE_URL",
+    "https://api.deepseek.com/v1",
+)
+LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-chat")
+LLM_TIMEOUT_S = float(os.environ.get("LLM_TIMEOUT_S", "5"))
+LLM_MAX_TENTATIVAS = int(os.environ.get("LLM_MAX_TENTATIVAS", "3"))
+LLM_BACKOFF_BASE_S = float(os.environ.get("LLM_BACKOFF_BASE_S", "0.1"))
+LLM_BACKOFF_MAX_S = float(os.environ.get("LLM_BACKOFF_MAX_S", "1.0"))
+LLM_CIRCUITO_LIMITE_FALHAS = int(os.environ.get("LLM_CIRCUITO_LIMITE_FALHAS", "5"))
+LLM_CIRCUITO_RESET_S = float(os.environ.get("LLM_CIRCUITO_RESET_S", "60"))
+LLM_MAX_TOKENS_LIMITE = int(os.environ.get("LLM_MAX_TOKENS_LIMITE", "1024"))
+LLM_MAX_LOGS_CARACTERES = int(os.environ.get("LLM_MAX_LOGS_CARACTERES", "2000"))
+LLM_REDACTAR_ENVIO = os.environ.get("LLM_REDACTAR_ENVIO", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+LLM_PRECO_ENTRADA_POR_1K = float(os.environ.get("LLM_PRECO_ENTRADA_POR_1K", "0.001"))
+LLM_PRECO_SAIDA_POR_1K = float(os.environ.get("LLM_PRECO_SAIDA_POR_1K", "0.002"))
 
 # O Django não configura logger nenhum por padrão; sem esta seção, os avisos de
 # cache (falha do Redis, evento de invalidação) apareceriam sem contexto. Só o

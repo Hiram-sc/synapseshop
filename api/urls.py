@@ -2,6 +2,7 @@ from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
 from api.views import (
+    AssistView,
     CategoryViewSet,
     ItemViewSet,
     LoginView,
@@ -29,5 +30,6 @@ urlpatterns = [
         PagamentoView.as_view(),
         name="pagamento",
     ),
+    path("assist/", AssistView.as_view(), name="assist"),
     path("", include(router.urls)),
 ]

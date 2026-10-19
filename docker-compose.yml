@@ -32,6 +32,21 @@ services:
       CACHE_TTL_DETALHE: ${CACHE_TTL_DETALHE:-300}
       # Aula 11 - TTL do cache-aside do pedido (GET /pedidos/{id}/)
       CACHE_TTL_PEDIDO: ${CACHE_TTL_PEDIDO:-60}
+      # Aula 14 - LLM (endpoint /api/v1/assist)
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_API_BASE_URL: ${LLM_API_BASE_URL:-https://api.deepseek.com/v1}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-chat}
+      LLM_TIMEOUT_S: ${LLM_TIMEOUT_S:-5}
+      LLM_MAX_TENTATIVAS: ${LLM_MAX_TENTATIVAS:-3}
+      LLM_BACKOFF_BASE_S: ${LLM_BACKOFF_BASE_S:-0.1}
+      LLM_BACKOFF_MAX_S: ${LLM_BACKOFF_MAX_S:-1.0}
+      LLM_CIRCUITO_LIMITE_FALHAS: ${LLM_CIRCUITO_LIMITE_FALHAS:-5}
+      LLM_CIRCUITO_RESET_S: ${LLM_CIRCUITO_RESET_S:-60}
+      LLM_MAX_TOKENS_LIMITE: ${LLM_MAX_TOKENS_LIMITE:-1024}
+      LLM_MAX_LOGS_CARACTERES: ${LLM_MAX_LOGS_CARACTERES:-2000}
+      LLM_REDACTAR_ENVIO: ${LLM_REDACTAR_ENVIO:-true}
+      LLM_PRECO_ENTRADA_POR_1K: ${LLM_PRECO_ENTRADA_POR_1K:-0.001}
+      LLM_PRECO_SAIDA_POR_1K: ${LLM_PRECO_SAIDA_POR_1K:-0.002}
       # Aula 9 - broker da mensageria. A API é o produtor (publica depois do
       # commit); o worker consome. As credenciais abaixo são as de
       # desenvolvimento, as mesmas do serviço rabbitmq.

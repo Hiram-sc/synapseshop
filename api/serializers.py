@@ -236,3 +236,50 @@ class PagamentoJaProcessadoResponseSerializer(serializers.Serializer):
     detail = serializers.CharField(help_text="Mensagem do conflito.")
     pagamento = PagamentoSerializer(help_text="Pagamento já existente.")
     pedido = PedidoSerializer(help_text="Pedido associado.")
+
+
+class AssistRequestSerializer(serializers.Serializer):
+    """Corpo do `POST /api/v1/assist` (Aula 14).
+
+    `logs` aceita **string** (um bloco de texto) ou **array** (lista de linhas,
+    possivelmente dicts estruturados) conforme o contrato da spec. O
+    `JSONField` entrega o valor já desserializado e `validate_logs` restringe a
+    esses dois formatos; a normalização para texto fica em `services.prompts`.
+    """
+
+    mode = serializers.ChoiceField(
+        choices=("summarize", "explain"),
+        help_text="Modo da assistente de IA: `summarize` ou `explain`.",
+    )
+    logs = serializers.JSONField(
+        required=True,
+        help_text=(
+            "Logs a analisar: string única ou lista de linhas "
+            "(strings ou objetos com `timestamp`/`level`/`message`)."
+        ),
+    )
+    temperature = serializers.FloatField(default=0.2, min_value=0.0, max_value=1.0)
+    max_tokens = serializers.IntegerField(default=256, min_value=1, max_value=4096)
+
+    def validate_logs(self, value):
+        if isinstance(value, str):
+            if not value.strip():
+                raise serializers.ValidationError("Os logs não podem ser vazios.")
+            return value
+        if isinstance(value, (list, tuple)):
+            if len(value) == 0:
+                raise serializers.ValidationError("A lista de logs não pode ser vazia.")
+            return list(value)
+        raise serializers.ValidationError(
+            "Envie os logs como texto (string) ou lista de linhas."
+        )
+
+
+class AssistMetaSerializer(serializers.Serializer):
+    tokens_prompt = serializers.IntegerField()
+    tokens_output = serializers.IntegerField()
+
+
+class AssistResponseSerializer(serializers.Serializer):
+    answer = serializers.CharField()
+    meta = AssistMetaSerializer()
