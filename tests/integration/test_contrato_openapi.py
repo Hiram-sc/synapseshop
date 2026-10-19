@@ -40,6 +40,7 @@ ROTAS_PROTEGIDAS = {
     ("/api/v1/pedidos/", "post"),
     ("/api/v1/pedidos/{id}/", "get"),
     ("/api/v1/pedidos/{pedido_id}/pagamento/", "post"),
+    ("/api/v1/assist/", "post"),
 }
 
 #: rotas explicitamente públicas (sem `security` no contrato).
